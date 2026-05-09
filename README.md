@@ -59,6 +59,9 @@ wss://relay.example.com/tcp?port={port}         ({port} is substituted)
 Pick the model (3278-2 default), press **Connect**, and the OIA at the
 bottom turns green.
 
+# Screenshots
+<img width="1920" height="966" alt="image" src="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b" />
+
 ## What works
 
 **Telnet / TN3270E (RFC 2355):**
