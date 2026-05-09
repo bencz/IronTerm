@@ -83,6 +83,56 @@
     <span id="oiaCursor" class="oia-cell oia-cursor" title="Cursor (row, column)">—</span>
 </div>
 
+<script>
+    // Mobile warning — fires on every page load.
+    (function () {
+        var ua = navigator.userAgent || '';
+        var isMobile =
+            window.matchMedia('(max-width: 768px)').matches ||
+            /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+
+        if (isMobile) {
+            alert(
+                '⚠  NOT OPTIMIZED FOR MOBILE\n\n' +
+                'IronTerm and the TN3270 terminal are NOT optimized or designed ' +
+                'for mobile devices.\n\n' +
+                'The terminal needs a physical keyboard to work properly: ' +
+                'keyboard input, AID keys (Enter, PF, PA, Clear), copy/paste, ' +
+                'and IND$FILE transfers all assume a hardware keyboard.\n\n' +
+                'For the full experience, please open this page on a desktop ' +
+                'browser.'
+            );
+        }
+    })();
+
+    // Pre-fill bridge URL / port from query params (used by the
+    // "PUBLIC SERVERS" links on the landing page). Runs on `load` so it
+    // wins against profile auto-load in main.js, then strips the query
+    // string from the address bar.
+    window.addEventListener('load', function () {
+        var qs = new URLSearchParams(location.search);
+        var bridge = qs.get('bridge');
+        var port   = qs.get('port');
+        var changed = false;
+
+        function setField (id, value) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.value = value;
+            el.dispatchEvent(new Event('input',  { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            changed = true;
+        }
+
+        if (bridge) setField('bridge', bridge);
+        if (port)   setField('port',   port);
+
+        if (changed && window.history && window.history.replaceState) {
+            window.history.replaceState({}, '', location.pathname);
+        }
+    });
+</script>
+
 <script type="module" src="src/main.js"></script>
 
 </body>

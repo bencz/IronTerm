@@ -1,42 +1,10 @@
-# webterm
+# IronTerm
 
 Browser-side IBM 3270 terminal. No backend, no server-side code, no
 runtime build step — just static files served over HTTP. The 3270
 datastream and TN3270E telnet negotiation are implemented in plain
 JavaScript modules running in the page; the page connects to the
 mainframe through any websockify-style TCP↔WebSocket relay.
-
-```
-                    ┌────────────────────────────────┐
-                    │   Browser (this repo)          │
-                    │                                │
-                    │   ┌─────────────────────────┐  │
-                    │   │  Terminal               │  │
-                    │   │   ├─ ScreenBuffer       │  │
-                    │   │   ├─ InboundParser      │  │
-                    │   │   ├─ OutboundBuilder    │  │
-                    │   │   ├─ Renderer (canvas)  │  │
-                    │   │   ├─ InputController    │  │
-                    │   │   ├─ Oia / NvtView      │  │
-                    │   │   └─ TelnetStream       │  │
-                    │   └────────────┬────────────┘  │
-                    │                │               │
-                    │   WebSocketTransport (binary)  │
-                    └────────────────┼───────────────┘
-                                     │  ws:// or wss://
-                                     ▼
-                    ┌────────────────────────────────┐
-                    │   websockify / ws-tcp-relay    │
-                    │   (any TCP↔WS bridge)          │
-                    └────────────────┬───────────────┘
-                                     │  raw TCP
-                                     ▼
-                    ┌────────────────────────────────┐
-                    │   z/OS · Hercules · pub400     │
-                    │   port 23 / 992 / 3270         │
-                    └────────────────────────────────┘
-```
-
 
 ## Quick start
 
@@ -66,12 +34,25 @@ For multi-target routing, websockify also supports a token file or you
 can put an nginx in front. The terminal sends `binary` as the WebSocket
 subprotocol; websockify accepts it by default.
 
+**Or skip running your own bridge** — a public test instance of
+[tk5-hercules](https://github.com/bencz/tk5-hercules) (Hercules MVS 3.8j
+Turnkey 5) is up at:
+
+```
+wss://tk5.bencz.cc:6080
+```
+
+Drop that URL into the bridge field and connect — no setup needed.
+TLS is terminated at the bridge, so the page works fine when served
+over HTTPS. For testing only; don't use real credentials.
+
 ### 3. Configure the page
 
 In the toolbar, set the bridge URL — for example one of:
 
 ```
 ws://localhost:6080/                            (single backend)
+wss://tk5.bencz.cc:6080/                        (public test server)
 wss://relay.example.com/tcp?port={port}         ({port} is substituted)
 ```
 
