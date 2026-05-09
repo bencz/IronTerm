@@ -9,4 +9,4 @@ COPY public/ ./public/
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["sh", "-c", "serve -s public -l tcp://0.0.0.0:${PORT}"]
+CMD ["sh", "-c", "serve --no-clipboard public -l tcp://0.0.0.0:${PORT}"]
