@@ -3,7 +3,77 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IronTerm — terminal emulator</title>
+
+    <!-- ---- Primary meta ----------------------------------------------- -->
+    <title>IronTerm — Browser-side IBM 3270 / TN3270 Terminal Emulator</title>
+    <meta name="description"
+          content="IronTerm — browser-side IBM 3270 (TN3270 / TN3270E) terminal emulator. Pure JavaScript, no backend, no build step. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge.">
+    <meta name="keywords"
+          content="IronTerm, IBM 3270, TN3270, TN3270E, terminal emulator, mainframe, z/OS, Hercules, MVS, TSO, CICS, AS/400, IBM i, TN5250, websockify, WebSocket, EBCDIC, IND$FILE, RFC 1041, RFC 2355, browser terminal, web terminal">
+    <meta name="author" content="Alexandre Bencz">
+    <meta name="robots" content="index, follow">
+    <meta name="googlebot" content="index, follow">
+    <meta name="theme-color" content="#050a05">
+    <link rel="canonical" href="https://ironterm.bencz.cc/">
+
+    <!-- ---- Favicon (inline SVG: green 'IT' on black) ----------------- -->
+    <link rel="icon" type="image/svg+xml"
+          href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' fill='%23050a05'/><text x='32' y='46' font-family='monospace' font-size='38' font-weight='bold' fill='%2333ff33' text-anchor='middle'>IT</text></svg>">
+
+    <!-- ---- Open Graph (Facebook / LinkedIn / Discord / Slack) -------- -->
+    <meta property="og:type"        content="website">
+    <meta property="og:site_name"   content="IronTerm">
+    <meta property="og:title"       content="IronTerm — Browser-side IBM 3270 / TN3270 Terminal Emulator">
+    <meta property="og:description" content="Browser-side IBM 3270 terminal emulator in pure JavaScript. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge — no backend, no build step.">
+    <meta property="og:url"         content="https://ironterm.bencz.cc/">
+    <meta property="og:image"       content="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b">
+    <meta property="og:image:alt"   content="IronTerm TN3270 client connected to a Hercules MVS mainframe">
+    <meta property="og:locale"      content="en_US">
+
+    <!-- ---- Twitter Card ---------------------------------------------- -->
+    <meta name="twitter:card"        content="summary_large_image">
+    <meta name="twitter:title"       content="IronTerm — Browser-side IBM 3270 / TN3270 Terminal Emulator">
+    <meta name="twitter:description" content="Browser-side IBM 3270 terminal emulator in pure JavaScript. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge — no backend, no build step.">
+    <meta name="twitter:image"       content="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b">
+
+    <!-- ---- Structured data (schema.org / JSON-LD) -------------------- -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "IronTerm",
+        "alternateName": ["Iron Term", "IronTerm 3270"],
+        "url": "https://ironterm.bencz.cc/",
+        "description": "Browser-side IBM 3270 (TN3270 / TN3270E) terminal emulator written in pure JavaScript. Connects to z/OS, VM/CMS, Hercules MVS, TSO, CICS through a WebSocket-to-TCP bridge. No backend, no build step.",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Terminal Emulator",
+        "operatingSystem": "Any (modern web browser)",
+        "softwareVersion": "1.0",
+        "license": "https://opensource.org/licenses/MIT",
+        "codeRepository": "https://github.com/bencz/IronTerm",
+        "image": "https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        },
+        "author": {
+            "@type": "Person",
+            "name": "Alexandre Bencz",
+            "url": "https://github.com/bencz"
+        },
+        "featureList": [
+            "TN3270 / TN3270E datastream (RFC 1041 / RFC 2355)",
+            "EBCDIC code pages CP037 and CP1047",
+            "IND$FILE upload/download (DFT mode)",
+            "Models 3278-2/3/4/5 (24x80 to 27x132)",
+            "Extended attributes, structured fields, Query Reply",
+            "Connection profiles persisted in localStorage"
+        ]
+    }
+    </script>
+
+    <!-- ---- Fonts ----------------------------------------------------- -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet"
