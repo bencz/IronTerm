@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>web3270 — protocols</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="picker-body">
+
+<header class="picker-header">
+    <h1>web3270</h1>
+    <p>Browser-side mainframe terminal. Pick a wire protocol.</p>
+</header>
+
+<main class="picker-grid">
+    <a class="picker-card picker-3270" href="tn3270/">
+        <div class="picker-tag">RFC 1041 / 2355</div>
+        <h2>TN3270</h2>
+        <p>IBM 3270 datastream over TN3270E. Talks to z/OS, VM/CMS,
+           Hercules MVS, TSO, CICS — anything that drives a 3278/3279
+           console.</p>
+        <ul>
+            <li>Models 2 / 3 / 4 / 5 (24×80 → 27×132)</li>
+            <li>Extended attributes, structured fields, Query Reply</li>
+            <li>Default port 23 (telnet) — needs a websockify-style bridge</li>
+        </ul>
+        <span class="picker-cta">Open TN3270 client →</span>
+    </a>
+</main>
+
+<footer class="picker-footer">
+    <span>Pure browser implementation. Connect through any
+        websockify-compatible TCP↔WebSocket relay; configure the
+        bridge URL on the client page.</span>
+</footer>
+
+</body>
+</html>

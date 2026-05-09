@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TN3270 client</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+
+<div id="toolbar">
+    <a class="back-link" href="../" title="Back">← Home</a>
+    <select id="profiles" class="profiles-select"
+            title="Saved connection profiles"></select>
+    <button id="profileSave"   class="profile-btn" title="Save current settings as profile">＋</button>
+    <button id="profileDelete" class="profile-btn" title="Delete selected profile">−</button>
+    <input id="bridge" type="text" placeholder="wss://bridge.example/tcp?port={port}"
+           value="ws://localhost:6080/" autocomplete="off"
+           title="WebSocket bridge URL (ws:// or wss://). The {port} placeholder is substituted with the port field. For wss with self-signed certs, accept the cert via https://host:port first.">
+    <input id="port" type="number" placeholder="port" value="23" min="1" max="65535"
+           title="Mainframe TCP port (substituted into the bridge URL via {port})">
+    <select id="model">
+        <option value="2">3278-2-E (24x80)</option>
+        <option value="3">3278-3-E (32x80)</option>
+        <option value="4">3278-4-E (43x80)</option>
+        <option value="5">3278-5-E (27x132)</option>
+    </select>
+    <select id="codePage" title="EBCDIC code page (changes glyph mapping)">
+        <option value="CP037" selected>CP037 — US English</option>
+        <option value="CP1047">CP1047 — Latin-1 / USS</option>
+    </select>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+
+    <div class="aid-bar">
+        <button data-aid="Enter">Enter</button>
+        <button data-aid="Clear">Clear</button>
+        <button data-aid="PA1">PA1</button>
+        <button data-aid="PA2">PA2</button>
+        <button data-aid="PA3">PA3</button>
+        <button data-aid="PF1">PF1</button>
+        <button data-aid="PF2">PF2</button>
+        <button data-aid="PF3">PF3</button>
+        <button data-aid="PF4">PF4</button>
+        <button data-aid="PF5">PF5</button>
+        <button data-aid="PF6">PF6</button>
+        <button data-aid="PF7">PF7</button>
+        <button data-aid="PF8">PF8</button>
+        <button data-aid="PF9">PF9</button>
+        <button data-aid="PF10">PF10</button>
+        <button data-aid="PF11">PF11</button>
+        <button data-aid="PF12">PF12</button>
+    </div>
+
+    <button id="downloadBtn" class="toggle"
+            title="Type IND$FILE GET 'dataset' on the current screen and press Enter">Download…</button>
+    <button id="uploadBtn" class="toggle"
+            title="Pick a local file for upload, then run IND$FILE PUT dataset on TSO">Upload…</button>
+    <button id="ruleToggle" class="toggle"
+            title="Show horizontal/vertical guide lines (rule) at the cursor">Rule</button>
+    <span class="hint" title="⌘/Ctrl+C copy, ⌘/Ctrl+V paste, ⌘/Ctrl+A select all, Esc clear, Insert toggles insert/overwrite">⌘C/⌘V/⌘A · Ins</span>
+    <span id="status">disconnected</span>
+</div>
+
+<div class="terminal-stage">
+    <canvas id="terminal"></canvas>
+    <div id="nvt" class="nvt-overlay hidden" tabindex="0"
+         aria-label="NVT (telnet/ASCII) banner"></div>
+</div>
+
+<!-- Operator Information Area: the strip the real 3270 puts at the bottom
+     of the screen. Each cell is a one-glyph indicator so the user can see,
+     at a glance, the connection / keyboard / insert / alarm status. -->
+<div id="oia" class="oia" role="status" aria-live="polite">
+    <span id="oiaConn"   class="oia-cell oia-conn"   title="Connection state">●</span>
+    <span id="oiaSys"    class="oia-cell oia-sys"    title="System / 3270 state">SYS</span>
+    <span id="oiaLock"   class="oia-cell oia-lock"   title="Keyboard">▢</span>
+    <span id="oiaInsert" class="oia-cell oia-insert" title="Insert mode (Insert key)">·</span>
+    <span id="oiaAlarm"  class="oia-cell oia-alarm"  title="Alarm">·</span>
+    <span id="oiaXfer"   class="oia-cell oia-xfer"   title="IND$FILE transfer">·</span>
+    <span class="oia-spacer"></span>
+    <span id="oiaModel"  class="oia-cell oia-model"  title="Negotiated terminal type">—</span>
+    <span id="oiaCursor" class="oia-cell oia-cursor" title="Cursor (row, column)">—</span>
+</div>
+
+<script type="module" src="src/main.js"></script>
+
+</body>
+</html>
