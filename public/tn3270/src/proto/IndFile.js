@@ -1,4 +1,4 @@
-// IND$FILE — file transfer between mainframe and terminal.
+// IND$FILE - file transfer between mainframe and terminal.
 //
 // IND$FILE is the de facto file-transfer protocol on 3270. The user
 // runs `IND$FILE GET dataset` (or PUT) on TSO/CMS/CICS; the host then
@@ -18,11 +18,11 @@
 // Each record after RT/ST is type-tagged:
 //
 //   01/09/0A/50   generic (length byte at +1, ignored)
-//   03            ContentsRecord — "FT:MSG " or "FT:DATA"
+//   03            ContentsRecord - "FT:MSG " or "FT:DATA"
 //   08            RecordSize (max upload buffer)
 //   63            RecordNumber (4-byte BE)
 //   69            ErrorRecord (2-byte code: 2200=EOF, 4700=CANCEL)
-//   C0            DataRecord — 5-byte header + raw buffer:
+//   C0            DataRecord - 5-byte header + raw buffer:
 //                   C0 80 [00 compressed | 61 uncompressed]
 //                   <total-len-hi> <total-len-lo> <buffer...>
 //
@@ -163,7 +163,7 @@ export class IndFile {
     }
 
     /** Caller queues a file the user picked. The actual transfer doesn't
-     *  start until the host sends OPEN — at which point we'll start
+     *  start until the host sends OPEN - at which point we'll start
      *  feeding chunks in response to upload-request records. */
     queueUpload (bytes, fileName) {
         this.uploadBuffer = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -237,7 +237,7 @@ export class IndFile {
         let p = start;
         while (p < body.length) {
             const tag = body[p];
-            // Only the DATA record (0xC0) has a different length encoding —
+            // Only the DATA record (0xC0) has a different length encoding -
             // 5-byte header where bytes 3-4 are total length.
             if (tag === REC.DATA) {
                 const total = ((body[p + 3] & 0xFF) << 8) | (body[p + 4] & 0xFF);
@@ -276,7 +276,7 @@ export class IndFile {
         const hasRecordSize = records.some(r => r.tag === REC.RECORDSIZE);
 
         if (this.contents === 'msg') {
-            // Message exchange — host is going to send DATA records that
+            // Message exchange - host is going to send DATA records that
             // we should treat as a status string. Direction is "download"
             // for parsing purposes.
             this.direction = 'download';
@@ -285,7 +285,7 @@ export class IndFile {
         } else if (hasRecordSize) {
             this.direction = 'upload';
             if (!this.uploadBuffer) {
-                this.onError?.('Host requested upload but no file is queued — pick a file first');
+                this.onError?.('Host requested upload but no file is queued - pick a file first');
                 this.#abort(ERR.CANCEL);
                 return;
             }
@@ -302,18 +302,18 @@ export class IndFile {
     #receiveDownloadChunk (records) {
         // The relevant sub-record is the DataRecord (0xC0). We don't
         // implement the stream-compression scheme (byte-replication) so
-        // we only accept uncompressed buffers — uncompressed is the
+        // we only accept uncompressed buffers - uncompressed is the
         // default for IND$FILE without the COMP option.
         const rec = records.find(r => r.tag === REC.DATA);
         if (!rec) return;
         const compressed = rec.header[2] === 0x00;
         if (compressed) {
-            this.onError?.('Compressed IND$FILE buffers are not supported — use IND$FILE GET ... ASCII (or no COMP option)');
+            this.onError?.('Compressed IND$FILE buffers are not supported - use IND$FILE GET ... ASCII (or no COMP option)');
             this.#abort(ERR.CANCEL);
             return;
         }
         if (this.contents === 'msg') {
-            // Status-message transfer — concatenate as MSG text and end.
+            // Status-message transfer - concatenate as MSG text and end.
             this.downloadChunks.push(rec.data);
             this.downloadBytes += rec.data.length;
         } else {
@@ -355,7 +355,7 @@ export class IndFile {
     #close () {
         const direction = this.direction;
         const wasMessage = this.contents === 'msg';
-        // Always ACK the close — even on aborted transfers, hosts expect it.
+        // Always ACK the close - even on aborted transfers, hosts expect it.
         this.pendingReplies.push(wrapReply(0x41, 0x09));
 
         if (direction === 'download' && !wasMessage) {

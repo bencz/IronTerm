@@ -45,7 +45,7 @@ export class Terminal {
         this.oia = new Oia(oiaEls);
         this.nvt = new NvtView(nvtEl, (line) => this.#sendNvt(line));
 
-        // IND$FILE callbacks — Terminal drives UI feedback and the
+        // IND$FILE callbacks - Terminal drives UI feedback and the
         // browser-side save / pick interactions. Bytes-on-wire is fully
         // handled inside `this.indFile`.
         this.indFile.onProgress = ({ direction, bytes }) => {
@@ -122,7 +122,7 @@ export class Terminal {
         this.draw();
         this.setStatus('connecting…', 'connecting');
         this.oia.setConnection('connecting');
-        this.oia.setModel('—');
+        this.oia.setModel('-');
         this.nvt.clear();
         this.nvt.hide();
 
@@ -175,7 +175,7 @@ export class Terminal {
 
     onTelnetState (state) {
         // Surface negotiation progress visually. Once BINARY is on, the
-        // host is going to start sending 3270 records — hide the NVT
+        // host is going to start sending 3270 records - hide the NVT
         // banner so the canvas can take over.
         if (state.deviceType) {
             this.setStatus(`negotiated ${state.deviceType}`, 'connecting');
@@ -198,7 +198,7 @@ export class Terminal {
         // Wrap parsing so a single malformed record can't take down the
         // session. If the host asked for a response (ALWAYS or ERROR),
         // we acknowledge with positive on success / negative on failure;
-        // otherwise we stay quiet (RFC 2355 §5.4 — unsolicited responses
+        // otherwise we stay quiet (RFC 2355 §5.4 - unsolicited responses
         // are wrong even on success).
         let parseError = null;
         try {
@@ -218,14 +218,14 @@ export class Terminal {
             this.telnet?.sendPositiveResponse(seq);
         }
 
-        // The host might have asked us a Query — answer it BEFORE
+        // The host might have asked us a Query - answer it BEFORE
         // anything else so it gets the answer in time.
         if (this.parser.queryRequested) {
             this.parser.queryRequested = false;
             const reply = this.builder.buildQueryReply();
             this.telnet?.sendRecord(reply);
         }
-        // Read commands (RB / RM / RMA) — answer with a screen dump.
+        // Read commands (RB / RM / RMA) - answer with a screen dump.
         if (this.parser.readRequest) {
             const req = this.parser.readRequest;
             this.parser.readRequest = null;
@@ -236,7 +236,7 @@ export class Terminal {
             this.telnet?.sendRecord(out);
         }
 
-        // IND$FILE — the driver may have queued one or more reply records
+        // IND$FILE - the driver may have queued one or more reply records
         // (ack OPEN, ack data buffer, send next upload chunk, etc.).
         // Each goes out as its own 3270 record.
         for (const reply of this.indFile.drainReplies())
@@ -258,7 +258,7 @@ export class Terminal {
         if (!this.telnet) return;
         // Pre-flight: if any unprotected field has a Validation attr that
         // isn't satisfied, the real 3278 refuses to transmit and parks
-        // the cursor on the offending field. Do the same — saves an
+        // the cursor on the offending field. Do the same - saves an
         // ugly host-side rejection (and matches user expectations from
         // physical terminals).
         const v = this.screen.validateForAid(aidByte);
@@ -272,7 +272,7 @@ export class Terminal {
             return;
         }
 
-        // Sniff the user's typed command for an IND$FILE GET — if found,
+        // Sniff the user's typed command for an IND$FILE GET - if found,
         // remember the dataset name so the upcoming download lands on
         // disk with a sensible filename instead of "transfer.bin". The
         // host doesn't include the dataset name in any of the WSF data
@@ -302,7 +302,7 @@ export class Terminal {
                 if (c.byte === 0x00) continue;
                 text += c.glyph || ' ';
             }
-            // Match either IND$FILE or its alt spelling IND£FILE — TSO
+            // Match either IND$FILE or its alt spelling IND£FILE - TSO
             // prefixes like "TSO " and any leading spaces are stripped.
             const m = text.match(/IND[$£]FILE\s+(GET|PUT)\s+(\S+)/i);
             if (m) return { action: m[1].toUpperCase(), dataset: m[2] };
@@ -313,7 +313,7 @@ export class Terminal {
     /** Type a JS string into the terminal at the current cursor. Each
      *  character is encoded to EBCDIC and inserted into the focused
      *  unprotected field. The host doesn't see anything until the user
-     *  presses an AID key — typing is purely client-side. */
+     *  presses an AID key - typing is purely client-side. */
     type (str) {
         if (this.screen.keyboardLocked) return;
         for (let i = 0; i < str.length; i++)
@@ -356,7 +356,7 @@ export class Terminal {
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        // Defer revoke — Safari needs the URL alive briefly after click.
+        // Defer revoke - Safari needs the URL alive briefly after click.
         setTimeout(() => URL.revokeObjectURL(url), 30_000);
         this.flashStatus(`download: ${safeName} (${blob.size.toLocaleString()} B)`, 'connected', 3000);
     }
@@ -372,7 +372,7 @@ export class Terminal {
             return;
         }
         if (this.screen.keyboardLocked) {
-            this.flashStatus('keyboard locked — wait for the host', 'error', 2000);
+            this.flashStatus('keyboard locked - wait for the host', 'error', 2000);
             return;
         }
         const last = localStorage.getItem('webterm.tn3270.lastDataset') ?? '';
@@ -391,7 +391,7 @@ export class Terminal {
             : `'${trimmed}'`;
         const cmd = `IND$FILE GET ${quoted} ASCII CRLF`;
         if (!this.#typeAtCursor(cmd)) {
-            this.flashStatus('no input field on screen — go to TSO READY first', 'error', 3000);
+            this.flashStatus('no input field on screen - go to TSO READY first', 'error', 3000);
             return;
         }
         this.draw();

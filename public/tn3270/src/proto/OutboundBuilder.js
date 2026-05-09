@@ -3,7 +3,7 @@
 //   - Read Buffer (full screen dump)
 //   - Query Reply structured fields (in response to Read Partition Query)
 //
-// All output is byte-level — the caller wraps it in a TN3270E header
+// All output is byte-level - the caller wraps it in a TN3270E header
 // and the IAC EOR framing.
 
 import { Aid, Order, Sf, QR, isShortReadAid } from './Constants.js';
@@ -32,7 +32,7 @@ export class OutboundBuilder {
         out.push(tmp[0], tmp[1]);
 
         // Walk modified fields and pack their content. The SBA points at
-        // the FIRST CONTENT cell of the field (one past the FA byte —
+        // the FIRST CONTENT cell of the field (one past the FA byte -
         // i.e. startPosition + 1), which is what every host expects.
         // Pointing at the FA byte itself
         // makes z/OS / TSO reject the read with "UNDEFINED INPUT FIELD"
@@ -60,9 +60,9 @@ export class OutboundBuilder {
     /** Full screen dump: AID + cursor + every cell, including FAs. The
      *  `replyMode` was set by the host via Set Reply Mode SF (0x09):
      *
-     *    0 — field mode: SF + FA byte for FA cells; raw bytes for others.
-     *    1 — extended-field mode: SFE + attr-pairs for FA cells.
-     *    2 — character mode: SA orders per content-cell change, for the
+     *    0 - field mode: SF + FA byte for FA cells; raw bytes for others.
+     *    1 - extended-field mode: SFE + attr-pairs for FA cells.
+     *    2 - character mode: SA orders per content-cell change, for the
      *        attribute types listed in `replyModeAttrs` (e.g. [0x42] to
      *        ask for foreground colour only). Field cells still emit SFE.
      *
@@ -76,7 +76,7 @@ export class OutboundBuilder {
         out.push(tmp[0], tmp[1]);
 
         // Track currently-emitted character attributes so we only insert
-        // SA orders when the attribute actually changes — keeps the
+        // SA orders when the attribute actually changes - keeps the
         // reply compact.
         let curFg = 0, curBg = 0, curHl = 0;
         const wantFg = replyModeAttrs.includes(0x42);
@@ -215,7 +215,7 @@ export class OutboundBuilder {
     }
 
     #qrColor () {
-        // 16 colour pairs (action == request) — full 3279-class palette.
+        // 16 colour pairs (action == request) - full 3279-class palette.
         const COLORS = [
             0x00, 0xF4, 0xF1, 0xF1, 0xF2, 0xF2, 0xF3, 0xF3,
             0xF4, 0xF4, 0xF5, 0xF5, 0xF6, 0xF6, 0xF7, 0xF7,
@@ -268,7 +268,7 @@ export class OutboundBuilder {
         return this.#wrap(QR.DDM, payload);
     }
 
-    /** Auxilliary Devices reply (0x99) — empty flags, signals
+    /** Auxilliary Devices reply (0x99) - empty flags, signals
      *  "no aux devices attached". Required by some hosts as a peer
      *  to DDM during file-transfer capability negotiation. */
     #qrAuxDevices () {
@@ -276,7 +276,7 @@ export class OutboundBuilder {
         return this.#wrap(QR.AUX_DEVICES, payload);
     }
 
-    /** OEM Auxilliary Device reply (0x8F) — identifies our terminal
+    /** OEM Auxilliary Device reply (0x8F) - identifies our terminal
      *  emulator name + device type. Bytes are mostly fixed (DDM-aware
      *  reply structure); only the 8-byte device type and 8-byte user
      *  name fields carry text. Both strings are EBCDIC CP037, padded
@@ -287,7 +287,7 @@ export class OutboundBuilder {
             0x00, 0x00,                                      // flags + refID
             0xE6, 0xC5, 0xC2, 0xF3, 0xF2, 0xF7, 0xF0, 0x40,  // "WEB3270 " (device type, EBCDIC)
             0xA6, 0x85, 0x82, 0xA3, 0x85, 0x99, 0x94, 0x40,  // "webterm " (user name, EBCDIC)
-            // Self-defining-parameters block — values came from a real
+            // Self-defining-parameters block - values came from a real
             // x3270 capture and are accepted by every IND$FILE host
             // I've seen.
             0x04, 0x01, 0x00, 0x00, 0x25, 0xFF,

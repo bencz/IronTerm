@@ -1,5 +1,5 @@
 // Input handling: keyboard → terminal commands, mouse → selection +
-// cursor placement, clipboard copy/paste. Pure UI glue — talks to the
+// cursor placement, clipboard copy/paste. Pure UI glue - talks to the
 // Terminal via callback hooks; never touches the wire directly.
 
 import { aidFromName } from '../proto/Constants.js';
@@ -237,7 +237,7 @@ export class InputController {
         try {
             const text = await navigator.clipboard.readText();
             if (!text) return;
-            // 3270 input fields are flat — strip line breaks and tabs so
+            // 3270 input fields are flat - strip line breaks and tabs so
             // they don't get typed as literal control chars.
             const cleaned = text.replace(/[\r\n\t]+/g, ' ');
             this.h.onType?.(cleaned);

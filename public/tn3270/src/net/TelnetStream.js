@@ -5,14 +5,14 @@
 //
 //   1. Strip / handle Telnet IAC sequences (DO, DONT, WILL, WONT,
 //      subnegotiations, EOR record framing).
-//   2. Negotiate BINARY, EOR, TERMINAL-TYPE, TN3270E — accept
+//   2. Negotiate BINARY, EOR, TERMINAL-TYPE, TN3270E - accept
 //      everything we want, refuse everything else.
 //   3. Strip the 5-byte TN3270E data-stream header from inbound 3270
 //      records, emit the same header on outbound records.
 //   4. Surface complete 3270 records to the listener (via `onRecord`).
 //
 // Outbound bytes that contain a literal 0xFF must be doubled before
-// going on the wire — Telnet treats a single 0xFF as IAC.
+// going on the wire - Telnet treats a single 0xFF as IAC.
 
 import { Telnet, TelnetOption, TermType, Tn3270e, TnHeader, Models } from '../proto/Constants.js';
 
@@ -50,7 +50,7 @@ export class TelnetStream {
         this.sb = null;
         // True after we've seen a lone IAC and are waiting for the second byte.
         this.iacPending = false;
-        // The verb we are mid-decoding (DO/DONT/WILL/WONT) — null otherwise.
+        // The verb we are mid-decoding (DO/DONT/WILL/WONT) - null otherwise.
         this.command = 0;
 
         // Negotiated state
@@ -65,14 +65,14 @@ export class TelnetStream {
 
         // ---- NOP keepalive ----------------------------------------
         // Send `IAC NOP` whenever the connection has been idle for
-        // 2 minutes — keeps NAT entries warm and detects half-open
+        // 2 minutes - keeps NAT entries warm and detects half-open
         // sockets. We only schedule it once we've actually seen a byte
         // (i.e. socket is connected); it stops automatically on close.
         this.keepAliveMs = (keepAliveSeconds ?? 120) * 1000;
         this.lastSendAt = Date.now();
         this.keepAliveTimer = setInterval(() => this.#tickKeepAlive(), 30_000);
 
-        // Outbound TN3270E sequence counter — RFC 2355 §3.2 says these
+        // Outbound TN3270E sequence counter - RFC 2355 §3.2 says these
         // should be unique and monotonically increasing. The 16-bit
         // field wraps at 0xFFFF; we start at 0 and increment per record.
         // Hosts that don't validate this (most don't) are unaffected.
@@ -107,7 +107,7 @@ export class TelnetStream {
     }
 
     #feedByte (b) {
-        // Mid-DO/DONT/WILL/WONT — `b` is the option code.
+        // Mid-DO/DONT/WILL/WONT - `b` is the option code.
         if (this.command !== 0) {
             this.#handleVerb(this.command, b);
             this.command = 0;
@@ -149,7 +149,7 @@ export class TelnetStream {
                     this.command = b;
                     return;
                 default:
-                    // Unknown 2-byte command — ignore.
+                    // Unknown 2-byte command - ignore.
                     return;
             }
         }
@@ -175,7 +175,7 @@ export class TelnetStream {
         this.record.length = 0;
 
         if (!this.state.tn3270e) {
-            // Plain TN3270 (no header) — feed everything to the 3270 layer.
+            // Plain TN3270 (no header) - feed everything to the 3270 layer.
             // No metadata; positive/negative responses are TN3270E-only.
             this.onRecord(bytes, { dataType: TnHeader.TYPE_3270_DATA, seq: 0, responseFlag: 0 });
             return;
@@ -190,7 +190,7 @@ export class TelnetStream {
 
         // Only TYPE_3270_DATA carries 3270 datastream we should render.
         // BIND_IMAGE / UNBIND / NVT / SSCP-LU all reach us when we
-        // negotiated BIND-IMAGE; let them pass silently — we don't
+        // negotiated BIND-IMAGE; let them pass silently - we don't
         // implement SNA bind state (and the host operates fine without).
         // Note: we no longer emit the positive response here; the
         // upper layer (Terminal) decides based on whether parsing
@@ -213,7 +213,7 @@ export class TelnetStream {
         this.send(out);
     }
 
-    /** Reject a record we couldn't process. `senseCode` is one byte —
+    /** Reject a record we couldn't process. `senseCode` is one byte -
      *  RFC 2355 §5.4 leaves the values implementation-defined; common
      *  values used by other implementations:
      *    0x10  function not supported / generic input error
@@ -359,7 +359,7 @@ export class TelnetStream {
             return;
         }
 
-        // Host: FUNCTIONS REQUEST <list> — host counter-proposed; accept
+        // Host: FUNCTIONS REQUEST <list> - host counter-proposed; accept
         // its list verbatim by echoing as IS.
         if (op === Tn3270e.FUNCTIONS && subOp === Tn3270e.REQUEST) {
             const out = new Uint8Array(data.length + 4);
@@ -374,7 +374,7 @@ export class TelnetStream {
             return;
         }
 
-        // Host: FUNCTIONS IS <list> — agreement; nothing to do but record.
+        // Host: FUNCTIONS IS <list> - agreement; nothing to do but record.
         if (op === Tn3270e.FUNCTIONS && subOp === Tn3270e.IS) {
             this.state.functions = Array.from(data.slice(3));
             this.onState(this.state);
@@ -406,7 +406,7 @@ export class TelnetStream {
         const out = new Uint8Array(headerLen + escaped.length + 2);
         let p = 0;
         if (headerLen > 0) {
-            // Increment then use — first record has seq=1, wraps at 0xFFFF.
+            // Increment then use - first record has seq=1, wraps at 0xFFFF.
             this.outboundSeq = (this.outboundSeq + 1) & 0xFFFF;
             const seq = this.outboundSeq;
             out[p++] = TnHeader.TYPE_3270_DATA;

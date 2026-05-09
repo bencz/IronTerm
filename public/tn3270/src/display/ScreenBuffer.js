@@ -17,7 +17,7 @@ import { Ebcdic } from '../proto/Ebcdic.js';
 
 // Decode the 6 packed bits of a Field Attribute byte (the FA, sometimes
 // called the "Start Field Attribute"). Bit 7 is the MDT, bit 5 is the
-// "protected" flag, etc. — all per the SNA reference.
+// "protected" flag, etc. - all per the SNA reference.
 function decodeFA (b) {
     const display = (b & 0x0C) >> 2;
     return {
@@ -42,7 +42,7 @@ class Cell {
         this.foreground  = 0x00;     // 0xF1..0xFF if extended, 0 = base
         this.background  = 0x00;
         this.highlight   = 0x00;     // Hl.* values
-        // Validation byte (XA_VALIDATION = 0xC1) — only meaningful on FA
+        // Validation byte (XA_VALIDATION = 0xC1) - only meaningful on FA
         // cells. Bits: 0x80 mandatory-fill, 0x40 mandatory-entry,
         // 0x20 trigger.
         this.validation  = 0x00;
@@ -153,7 +153,7 @@ export class ScreenBuffer {
         this.formatted = true;
     }
 
-    /** Modify Field — update an existing FA cell at the pen position
+    /** Modify Field - update an existing FA cell at the pen position
      *  with new attribute pairs. Used by the MF order. The FA byte
      *  itself is replaced when the pair carries XA_START_FIELD (0xC0);
      *  extended-attribute codes (0x41/0x42/0x45) update the FA cell's
@@ -167,12 +167,12 @@ export class ScreenBuffer {
         } else if (code === 0x42) cell.foreground = value & 0xFF;
         else   if (code === 0x45) cell.background = value & 0xFF;
         else   if (code === 0x41) cell.highlight  = value & 0xFF;
-        // CHARSET / VALIDATION / OUTLINING / TRANSPARENCY / RESET — accepted
+        // CHARSET / VALIDATION / OUTLINING / TRANSPARENCY / RESET - accepted
         // but not visually represented.
     }
 
     /** Erase from the current pen position up to (but not including) the
-     *  next FA byte. Used when Program Tab follows text — per the IBM
+     *  next FA byte. Used when Program Tab follows text - per the IBM
      *  spec, PT after a text order erases the rest of the field. */
     eraseToNextField () {
         let p = this.position;
@@ -189,7 +189,7 @@ export class ScreenBuffer {
     /** Erase from the current cursor to the end of the field whose FA
      *  is at `fieldStart`. Stops at the next FA byte, or if the cursor
      *  has already auto-skipped into a different field. Equivalent of
-     *  the 3278's "Erase EOF" key (PF5/End) — useful after typing a
+     *  the 3278's "Erase EOF" key (PF5/End) - useful after typing a
      *  fresh command into a field that may already contain leftover
      *  characters from a previous keystroke session.                  */
     eraseFromCursorToFieldEnd (fieldStart) {
@@ -233,7 +233,7 @@ export class ScreenBuffer {
         this.moveRight();
     }
 
-    /** Pen state reset — called by EraseWrite / EraseWriteAlternate. */
+    /** Pen state reset - called by EraseWrite / EraseWriteAlternate. */
     resetPen () {
         this.position = 0;
         this.penFg = 0;
@@ -250,7 +250,7 @@ export class ScreenBuffer {
         this.fields = [];
     }
 
-    /** Erase All Unprotected — preserves protected cells, blanks the rest
+    /** Erase All Unprotected - preserves protected cells, blanks the rest
      *  and resets MDT on every unprotected field. The cursor goes to the
      *  start of the first unprotected field (or address 0 if none). */
     eraseAllUnprotected () {
@@ -281,7 +281,7 @@ export class ScreenBuffer {
         this.fields = [];
         if (!this.formatted) return;
 
-        // Find the FA that "covers" position 0 — that's the last FA in
+        // Find the FA that "covers" position 0 - that's the last FA in
         // the buffer (3270 buffers wrap).
         const faIndices = [];
         for (let i = 0; i < this.size; i++)
@@ -384,10 +384,10 @@ export class ScreenBuffer {
      *  non-null. Returns the offending field + reason, or null when ok.
      *
      *  PA / Clear are short-read AIDs (don't transmit field data) so
-     *  validation is bypassed for them — same convention real 3278s use.
+     *  validation is bypassed for them - same convention real 3278s use.
      */
     validateForAid (aidByte) {
-        // Short-read AIDs (PA1, PA2, PA3, Clear) — don't transmit fields,
+        // Short-read AIDs (PA1, PA2, PA3, Clear) - don't transmit fields,
         // so validation doesn't apply. Inlined to avoid an import cycle.
         if (aidByte === 0x6C || aidByte === 0x6E || aidByte === 0x6B || aidByte === 0x6D)
             return null;
@@ -427,7 +427,7 @@ export class ScreenBuffer {
         if (this.insertMode) {
             // Walk from cursor up to the cell just before the next FA;
             // if the last cell is non-null we'd push data out of the field
-            // — refuse (host expects field-bounded inserts).
+            // - refuse (host expects field-bounded inserts).
             let last = this.cursor;
             for (let n = 1; n < field.length; n++) {
                 const idx = (this.cursor + n) % this.size;
@@ -436,7 +436,7 @@ export class ScreenBuffer {
             }
             const tail = this.cells[last];
             if (tail.byte !== 0x00) {
-                this.alarm = true;          // beep — no room
+                this.alarm = true;          // beep - no room
                 return false;
             }
             // Shift right one cell from `last` back to `cursor`.
@@ -485,7 +485,7 @@ export class ScreenBuffer {
         return this.insertMode;
     }
 
-    /** Backspace inside an unprotected field — non-destructive cursor move
+    /** Backspace inside an unprotected field - non-destructive cursor move
      *  to the previous content cell, consistent with x3270 default. */
     backspace () {
         const field = this.fieldAt(this.cursor);
@@ -493,7 +493,7 @@ export class ScreenBuffer {
         let prev = (this.cursor - 1 + this.size) % this.size;
         if (prev === field.start) return;     // can't go onto FA byte
         // Erase the char (3270 BS == "delete char left" in input mode is
-        // reasonable — but x3270's default is non-destructive. We pick the
+        // reasonable - but x3270's default is non-destructive. We pick the
         // destructive behaviour because it matches what users expect.)
         const cell = this.cells[prev];
         cell.byte = 0x00;

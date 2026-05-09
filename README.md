@@ -1,7 +1,7 @@
 # IronTerm
 
 Browser-side IBM 3270 terminal. No backend, no server-side code, no
-runtime build step — just static files served over HTTP. The 3270
+runtime build step - just static files served over HTTP. The 3270
 datastream and TN3270E telnet negotiation are implemented in plain
 JavaScript modules running in the page; the page connects to the
 mainframe through any websockify-style TCP↔WebSocket relay.
@@ -34,7 +34,7 @@ For multi-target routing, websockify also supports a token file or you
 can put an nginx in front. The terminal sends `binary` as the WebSocket
 subprotocol; websockify accepts it by default.
 
-**Or skip running your own bridge** — a public test instance of
+**Or skip running your own bridge** - a public test instance of
 [tk5-hercules](https://github.com/bencz/tk5-hercules) (Hercules MVS 3.8j
 Turnkey 5) is up at:
 
@@ -42,13 +42,13 @@ Turnkey 5) is up at:
 wss://tk5.bencz.cc:6080
 ```
 
-Drop that URL into the bridge field and connect — no setup needed.
+Drop that URL into the bridge field and connect - no setup needed.
 TLS is terminated at the bridge, so the page works fine when served
 over HTTPS. For testing only; don't use real credentials.
 
 ### 3. Configure the page
 
-In the toolbar, set the bridge URL — for example one of:
+In the toolbar, set the bridge URL - for example one of:
 
 ```
 ws://localhost:6080/                            (single backend)
@@ -72,7 +72,7 @@ bottom turns green.
 - 5-byte data-stream header on inbound and outbound records
 - Outbound sequence numbers are unique and monotonically increasing
   (RFC 2355 §3.2)
-- Dispatch by data-type — only `3270-DATA` is fed to the parser;
+- Dispatch by data-type - only `3270-DATA` is fed to the parser;
   `BIND-IMAGE` / `UNBIND` / `NVT-DATA` / `SSCP-LU-DATA` are accepted
   and ignored.
 - ALWAYS-RESPONSE / ERROR-RESPONSE handled correctly:
@@ -89,12 +89,12 @@ bottom turns green.
   `RESET-PARTITION`, `START-PRINTER`
 - 12-bit and 14-bit buffer addresses (auto-detected on input,
   always 12-bit on output)
-- Cyclic field model — fields that wrap around the end of the buffer
+- Cyclic field model - fields that wrap around the end of the buffer
 - Field MDT tracking; modified-field replies use `f.start + 1`
-- Validation attributes (mandatory-fill / mandatory-entry) — terminal
+- Validation attributes (mandatory-fill / mandatory-entry) - terminal
   refuses the AID and parks the cursor on the offending field, just
   like a physical 3278.
-- Set Reply Mode SF (0x09) is honoured — Read Buffer responses adapt
+- Set Reply Mode SF (0x09) is honoured - Read Buffer responses adapt
   to field / extended-field / character mode with the requested
   attribute list.
 
@@ -103,7 +103,7 @@ bottom turns green.
 Summary, Usable Area, Character Sets, Color, Highlight, Reply Modes,
 Implicit Partition.
 
-**File transfer — IND$FILE:**
+**File transfer - IND$FILE:**
 
 - **Download** (host → browser): user types `IND$FILE GET dataset` on
   TSO/CMS; the terminal collects the WSF data records (rectype 0x47,
@@ -116,7 +116,7 @@ Implicit Partition.
 - Works for both `FT:DATA` (binary/ASCII files) and `FT:MSG` (host
   status messages, surfaced as a flash status).
 - Compressed mode (`IND$FILE GET ... COMP`) is detected and refused
-  with a clear message — use the default uncompressed transfer.
+  with a clear message - use the default uncompressed transfer.
 
 **Models supported:**
 
@@ -131,7 +131,7 @@ Implicit Partition.
 
 - Canvas-rendered display with extended color (3279-class palette),
   highlighting (underscore, reverse video, intensify)
-- OIA status bar — connection LED, keyboard lock, insert mode, alarm
+- OIA status bar - connection LED, keyboard lock, insert mode, alarm
   flash, terminal type, cursor R/C
 - Insert-mode toggle (Insert key) with overflow alarm
 - Mouse selection, copy / paste / select-all (⌘/Ctrl+C/V/A)
@@ -145,16 +145,16 @@ Implicit Partition.
 Two EBCDIC code pages ship today, switchable from the toolbar dropdown
 and persisted per connection profile:
 
-- **CP037** — US English EBCDIC. Default. Used by classic z/OS, Hercules
+- **CP037** - US English EBCDIC. Default. Used by classic z/OS, Hercules
   turnkey, pub400 (IBM i), and most legacy mainframe shops.
-- **CP1047** — Latin-1 Open Systems EBCDIC. The line-feed byte sits at
+- **CP1047** - Latin-1 Open Systems EBCDIC. The line-feed byte sits at
   0x15 instead of 0x25, plus a few special-character swaps (`¢`/`[`,
   `!`/`]`, `¬`/`^`, etc.). Used by USS / z/OS Unix and many modern
   hosts that interoperate with ASCII tooling.
 
 Switching mid-session re-renders existing cells through the new table
 immediately, no reconnect needed. Adding another code page is a 10-line
-change — drop its delta map into `DELTAS` in `src/proto/Ebcdic.js`.
+change - drop its delta map into `DELTAS` in `src/proto/Ebcdic.js`.
 
 
 ## Browser compatibility
@@ -174,6 +174,6 @@ won't surface a TLS prompt during a WebSocket handshake.
 This is the realistic gap list. Everything here is fixable; nothing
 blocks day-to-day TSO / CICS use as far as I've tested.
 
-- **Other EBCDIC code pages** (CP500, CP297, CP285, …) — straightforward
+- **Other EBCDIC code pages** (CP500, CP297, CP285, …) - straightforward
   to add (delta maps in `Ebcdic.js`); CP037 + CP1047 ship today
 - **DBCS / SO/SI** (Asian double-byte)

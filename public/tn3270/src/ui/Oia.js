@@ -1,4 +1,4 @@
-// Operator Information Area — the bottom status bar a real 3270 has.
+// Operator Information Area - the bottom status bar a real 3270 has.
 // Each glyph is a single indicator so the user can scan state at a
 // glance: connection, keyboard lock, insert mode, alarm flash,
 // negotiated terminal type, cursor position.
@@ -45,7 +45,7 @@ export class Oia {
     }
 
     setModel (text) {
-        this.model.textContent = text || '—';
+        this.model.textContent = text || '-';
     }
 
     setCursor (row, col) {

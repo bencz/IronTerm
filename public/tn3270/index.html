@@ -6,7 +6,7 @@
 
     <title>TN3270 · IronTerm</title>
     <meta name="description"
-          content="IronTerm TN3270 / TN3270E client — browser-side IBM 3270 terminal emulator. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge.">
+          content="IronTerm TN3270 / TN3270E client - browser-side IBM 3270 terminal emulator. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge.">
     <meta name="author" content="Alexandre Bencz">
     <meta name="robots" content="index, follow">
     <meta name="theme-color" content="#000">
@@ -17,7 +17,7 @@
 
     <meta property="og:type"        content="website">
     <meta property="og:site_name"   content="IronTerm">
-    <meta property="og:title"       content="TN3270 Client — IronTerm">
+    <meta property="og:title"       content="TN3270 Client - IronTerm">
     <meta property="og:description" content="Browser-side IBM 3270 terminal emulator. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge.">
     <meta property="og:url"         content="https://ironterm.bencz.cc/tn3270/">
     <meta property="og:image"       content="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b">
@@ -44,8 +44,8 @@
         <option value="5">3278-5-E (27x132)</option>
     </select>
     <select id="codePage" title="EBCDIC code page (changes glyph mapping)">
-        <option value="CP037" selected>CP037 — US English</option>
-        <option value="CP1047">CP1047 — Latin-1 / USS</option>
+        <option value="CP037" selected>CP037 - US English</option>
+        <option value="CP1047">CP1047 - Latin-1 / USS</option>
     </select>
     <button id="connect">Connect</button>
     <button id="disconnect" disabled>Disconnect</button>
@@ -97,12 +97,12 @@
     <span id="oiaAlarm"  class="oia-cell oia-alarm"  title="Alarm">·</span>
     <span id="oiaXfer"   class="oia-cell oia-xfer"   title="IND$FILE transfer">·</span>
     <span class="oia-spacer"></span>
-    <span id="oiaModel"  class="oia-cell oia-model"  title="Negotiated terminal type">—</span>
-    <span id="oiaCursor" class="oia-cell oia-cursor" title="Cursor (row, column)">—</span>
+    <span id="oiaModel"  class="oia-cell oia-model"  title="Negotiated terminal type">-</span>
+    <span id="oiaCursor" class="oia-cell oia-cursor" title="Cursor (row, column)">-</span>
 </div>
 
 <script>
-    // Mobile warning — fires on every page load.
+    // Mobile warning - fires on every page load.
     (function () {
         var ua = navigator.userAgent || '';
         var isMobile =
@@ -150,7 +150,7 @@
         }
     });
 
-    // Dynamic <title> — reflects the bridge host and connection state.
+    // Dynamic <title> - reflects the bridge host and connection state.
     // Format:  [state] host:port · TN3270 · IronTerm
     window.addEventListener('load', function () {
         var FALLBACK = 'TN3270 · IronTerm';

@@ -10,7 +10,7 @@ html, body {
 
 body {
     /* column flex so the canvas can take exactly what's left after the
-       toolbar — even when the toolbar wraps onto multiple lines. */
+       toolbar - even when the toolbar wraps onto multiple lines. */
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -197,7 +197,7 @@ canvas#terminal {
 }
 .nvt-overlay.hidden { display: none; }
 .nvt-overlay::before {
-    content: "NVT mode (telnet/ASCII) — switches to 3270 once host negotiates BINARY";
+    content: "NVT mode (telnet/ASCII) - switches to 3270 once host negotiates BINARY";
     display: block;
     color: #5a8a5a;
     font-size: 10px;

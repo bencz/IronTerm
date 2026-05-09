@@ -18,7 +18,7 @@ export class InboundParser {
      *  @param {import('./IndFile.js').IndFile} [indFile]  optional file-transfer driver */
     constructor (buffer, indFile = null) {
         this.buffer = buffer;
-        // Set when the host sends a Read Partition (Query) — main loop
+        // Set when the host sends a Read Partition (Query) - main loop
         // will pick it up and reply with a Query Reply.
         this.queryRequested = false;
         // Set when an explicit Read command arrives (RB / RM / RMA).
@@ -29,7 +29,7 @@ export class InboundParser {
         this.replyMode = 0;
         this.replyModeAttrs = [];
 
-        // Optional IND$FILE driver — when non-null, SFs of type 0xD0
+        // Optional IND$FILE driver - when non-null, SFs of type 0xD0
         // are dispatched to it and its accumulated replies are flushed
         // by the Terminal after each record.
         this.indFile = indFile;
@@ -65,7 +65,7 @@ export class InboundParser {
         } else if (cmd === Cmd.RMA_6E || cmd === Cmd.RMA_0E) {
             this.readRequest = { kind: 'RMA' };
         } else {
-            // Unknown top-level command — bubble up so the Terminal can
+            // Unknown top-level command - bubble up so the Terminal can
             // emit a NEGATIVE-RESPONSE if the host requested one.
             const err = new Error(`Unknown 3270 command 0x${cmd.toString(16)}`);
             err.senseCode = 0x10;     // function not supported
@@ -79,7 +79,7 @@ export class InboundParser {
         const cmd = record[0];
         const erase = isEraseWrite(cmd);
         const alt   = isAlternate(cmd);
-        // (Alternate just means "use the secondary screen size" — we don't
+        // (Alternate just means "use the secondary screen size" - we don't
         // toggle dimensions here because the model is fixed at connect time
         // per the negotiated terminal type.)
         void alt;
@@ -115,7 +115,7 @@ export class InboundParser {
         const buf = this.buffer;
         let p = start;
         const max = record.length;
-        // PT after a text run erases the rest of the field — see the
+        // PT after a text run erases the rest of the field - see the
         // IBM 3270 Data Stream Programmer's Reference. Only data bytes
         // count as "text" for this purpose; control orders (SF, SBA,
         // etc.) reset it.
@@ -170,7 +170,7 @@ export class InboundParser {
                     break;
                 }
                 case Order.MF: {
-                    // Modify Field — replaces attrs on the FA at current
+                    // Modify Field - replaces attrs on the FA at current
                     // pen position, then advances pen by 1 (per spec).
                     const pairs = record[p + 1] & 0xFF;
                     let q = p + 2;
@@ -222,7 +222,7 @@ export class InboundParser {
                     // Erase unprotected to address: walk forward
                     // overwriting unprotected cells with nulls until we
                     // hit `stop`. Also reset MDT on any unprotected
-                    // field we crossed — IBM spec says EUA implicitly
+                    // field we crossed - IBM spec says EUA implicitly
                     // re-modifies-then-clears, so the field appears
                     // un-modified after the order.
                     const stop = BufferAddress.decode(record[p + 1], record[p + 2]);
@@ -250,7 +250,7 @@ export class InboundParser {
                     break;
                 }
                 case Order.GE: {
-                    // Graphics Escape — emit the next byte as-is. We don't
+                    // Graphics Escape - emit the next byte as-is. We don't
                     // have a graphics font; render the EBCDIC glyph.
                     buf.write(record[p + 1]);
                     nextPrevText = true;
@@ -298,7 +298,7 @@ export class InboundParser {
                 break;
             case Sf.OUTBOUND_3270DS: {
                 // Wrapper: the second byte is partition ID, the rest is a
-                // normal W/EW/EWA/EAU command — feed it back through.
+                // normal W/EW/EWA/EAU command - feed it back through.
                 if (body.length >= 1) {
                     const partition = body[0]; void partition;
                     const inner = body.subarray(1);
@@ -331,7 +331,7 @@ export class InboundParser {
                 if (this.indFile) this.indFile.process(body);
                 break;
             default:
-                // Unknown structured field — quietly ignore so the host
+                // Unknown structured field - quietly ignore so the host
                 // doesn't disconnect us.
                 break;
         }

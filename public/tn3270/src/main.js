@@ -10,7 +10,7 @@ function buildWsUrl (raw, port) {
     const trimmed = raw.trim();
     if (!trimmed) return null;
     // Bridge URL is used as-is, with one substitution: any literal
-    // "{port}" is replaced by the port field — lets a single relay route
+    // "{port}" is replaced by the port field - lets a single relay route
     // to several backend services without retyping the whole URL.
     return trimmed.replaceAll('{port}', encodeURIComponent(port));
 }
@@ -19,7 +19,7 @@ function main () {
     // Sentinel log: lets us see in devtools whether the latest code
     // is actually loaded (vs. a cached older bundle). Bump the date
     // when adding new diagnostics so you can tell at a glance.
-    console.log('%c[webterm]', 'color:#6cf', 'boot — IND$FILE diagnostic build (2026-05-08)');
+    console.log('%c[webterm]', 'color:#6cf', 'boot - IND$FILE diagnostic build (2026-05-08)');
 
     const $ = (id) => document.getElementById(id);
 

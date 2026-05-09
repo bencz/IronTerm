@@ -21,7 +21,7 @@ function readAll () {
 function writeAll (list) {
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-    } catch { /* quota / private mode — silently ignore */ }
+    } catch { /* quota / private mode - silently ignore */ }
 }
 
 export class Profiles {
@@ -30,7 +30,7 @@ export class Profiles {
      * @param {HTMLSelectElement} els.select
      * @param {HTMLButtonElement} els.saveBtn
      * @param {HTMLButtonElement} els.deleteBtn
-     * @param {object} fields  { bridge, host, port, model } — input/select elements
+     * @param {object} fields  { bridge, host, port, model } - input/select elements
      */
     constructor (els, fields) {
         this.select    = els.select;
@@ -51,7 +51,7 @@ export class Profiles {
         this.select.innerHTML = '';
         const blank = document.createElement('option');
         blank.value = '';
-        blank.textContent = this.list.length === 0 ? '(no profiles)' : '— pick a profile —';
+        blank.textContent = this.list.length === 0 ? '(no profiles)' : '- pick a profile -';
         this.select.appendChild(blank);
         for (const p of this.list) {
             const opt = document.createElement('option');
@@ -69,7 +69,7 @@ export class Profiles {
         if (!name) return;
         const p = this.list.find(x => x.name === name);
         if (!p) return;
-        // Tolerant of profiles saved with a different field shape — older
+        // Tolerant of profiles saved with a different field shape - older
         // versions persisted a "host" field that we no longer surface.
         for (const key of Object.keys(this.fields)) {
             const el = this.fields[key];

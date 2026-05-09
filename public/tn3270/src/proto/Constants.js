@@ -1,5 +1,5 @@
 // All wire-protocol byte values for telnet, TN3270E, and the 3270
-// datastream — kept in one place so the parser, the writer, and the
+// datastream - kept in one place so the parser, the writer, and the
 // negotiation layer can never disagree about what a byte means.
 
 // ---- Telnet ------------------------------------------------------------
@@ -219,7 +219,7 @@ export const QR = Object.freeze({
     HIGHLIGHT:      0x87,
     REPLY_MODES:    0x88,
     OEM_AUX:        0x8F,
-    DDM:            0x95,    // Distributed Data Management — required for IND$FILE / DFT mode
+    DDM:            0x95,    // Distributed Data Management - required for IND$FILE / DFT mode
     AUX_DEVICES:    0x99,
     IMPL_PARTITION: 0xA6,
 });
