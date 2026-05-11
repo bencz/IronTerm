@@ -27,7 +27,7 @@ Any static server works; nothing in the project requires a build step.
 option. To expose a Hercules MVS turnkey listening on `localhost:3270`:
 
 ```sh
-websockify --binary 6080 localhost:3270
+websockify 0.0.0.0:6080 localhost:3270
 ```
 
 For multi-target routing, websockify also supports a token file or you
