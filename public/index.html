@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <!-- ---- Primary meta ----------------------------------------------- -->
-    <title>IronTerm - Browser-side IBM 3270 / TN3270 Terminal Emulator</title>
+    <title>IronTerm - Browser-side IBM 3270 / 5250 Terminal Emulator</title>
     <meta name="description"
-          content="IronTerm - browser-side IBM 3270 (TN3270 / TN3270E) terminal emulator. Pure JavaScript, no backend, no build step. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge.">
+          content="IronTerm - browser-side IBM 3270 (TN3270 / TN3270E) and 5250 (TN5250 / TN5250E) terminal emulator. Pure JavaScript, no backend, no build step. Connect to z/OS, Hercules MVS, TSO, CICS, IBM i and AS/400 via a WebSocket bridge.">
     <meta name="keywords"
           content="IronTerm, IBM 3270, TN3270, TN3270E, terminal emulator, mainframe, z/OS, Hercules, MVS, TSO, CICS, AS/400, IBM i, TN5250, websockify, WebSocket, EBCDIC, IND$FILE, RFC 1041, RFC 2355, browser terminal, web terminal">
     <meta name="author" content="Alexandre Bencz">
@@ -23,8 +23,8 @@
     <!-- ---- Open Graph (Facebook / LinkedIn / Discord / Slack) -------- -->
     <meta property="og:type"        content="website">
     <meta property="og:site_name"   content="IronTerm">
-    <meta property="og:title"       content="IronTerm - Browser-side IBM 3270 / TN3270 Terminal Emulator">
-    <meta property="og:description" content="Browser-side IBM 3270 terminal emulator in pure JavaScript. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge - no backend, no build step.">
+    <meta property="og:title"       content="IronTerm - Browser-side IBM 3270 / 5250 Terminal Emulator">
+    <meta property="og:description" content="Browser-side IBM 3270 and 5250 terminal emulator in pure JavaScript. Connect to z/OS, Hercules MVS, TSO, CICS, IBM i and AS/400 via a WebSocket bridge - no backend, no build step.">
     <meta property="og:url"         content="https://ironterm.bencz.cc/">
     <meta property="og:image"       content="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b">
     <meta property="og:image:alt"   content="IronTerm TN3270 client connected to a Hercules MVS mainframe">
@@ -32,45 +32,47 @@
 
     <!-- ---- Twitter Card ---------------------------------------------- -->
     <meta name="twitter:card"        content="summary_large_image">
-    <meta name="twitter:title"       content="IronTerm - Browser-side IBM 3270 / TN3270 Terminal Emulator">
-    <meta name="twitter:description" content="Browser-side IBM 3270 terminal emulator in pure JavaScript. Connect to z/OS, Hercules MVS, TSO, CICS via a WebSocket bridge - no backend, no build step.">
+    <meta name="twitter:title"       content="IronTerm - Browser-side IBM 3270 / 5250 Terminal Emulator">
+    <meta name="twitter:description" content="Browser-side IBM 3270 and 5250 terminal emulator in pure JavaScript. Connect to z/OS, Hercules MVS, TSO, CICS, IBM i and AS/400 via a WebSocket bridge - no backend, no build step.">
     <meta name="twitter:image"       content="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b">
 
     <!-- ---- Structured data (schema.org / JSON-LD) -------------------- -->
     <script type="application/ld+json">
-    {
-        "@context": "https://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "IronTerm",
-        "alternateName": ["Iron Term", "IronTerm 3270"],
-        "url": "https://ironterm.bencz.cc/",
-        "description": "Browser-side IBM 3270 (TN3270 / TN3270E) terminal emulator written in pure JavaScript. Connects to z/OS, VM/CMS, Hercules MVS, TSO, CICS through a WebSocket-to-TCP bridge. No backend, no build step.",
-        "applicationCategory": "DeveloperApplication",
-        "applicationSubCategory": "Terminal Emulator",
-        "operatingSystem": "Any (modern web browser)",
-        "softwareVersion": "1.0",
-        "license": "https://opensource.org/licenses/MIT",
-        "codeRepository": "https://github.com/bencz/IronTerm",
-        "image": "https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b",
-        "offers": {
-            "@type": "Offer",
-            "price": "0",
-            "priceCurrency": "USD"
-        },
-        "author": {
-            "@type": "Person",
-            "name": "Alexandre Bencz",
-            "url": "https://github.com/bencz"
-        },
-        "featureList": [
-            "TN3270 / TN3270E datastream (RFC 1041 / RFC 2355)",
-            "EBCDIC code pages CP037 and CP1047",
-            "IND$FILE upload/download (DFT mode)",
-            "Models 3278-2/3/4/5 (24x80 to 27x132)",
-            "Extended attributes, structured fields, Query Reply",
-            "Connection profiles persisted in localStorage"
-        ]
-    }
+        {
+            "@context": "https://schema.org",
+            "@type": "SoftwareApplication",
+            "name": "IronTerm",
+            "alternateName": ["Iron Term", "IronTerm 3270", "IronTerm 5250"],
+            "url": "https://ironterm.bencz.cc/",
+            "description": "Browser-side IBM 3270 (TN3270 / TN3270E) and 5250 (TN5250 / TN5250E) terminal emulator written in pure JavaScript. Connects to z/OS, VM/CMS, Hercules MVS, TSO, CICS, IBM i and AS/400 through a WebSocket-to-TCP bridge. No backend, no build step.",
+            "applicationCategory": "DeveloperApplication",
+            "applicationSubCategory": "Terminal Emulator",
+            "operatingSystem": "Any (modern web browser)",
+            "softwareVersion": "1.0",
+            "license": "https://opensource.org/licenses/MIT",
+            "codeRepository": "https://github.com/bencz/IronTerm",
+            "image": "https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b",
+            "offers": {
+                "@type": "Offer",
+                "price": "0",
+                "priceCurrency": "USD"
+            },
+            "author": {
+                "@type": "Person",
+                "name": "Alexandre Bencz",
+                "url": "https://github.com/bencz"
+            },
+            "featureList": [
+                "TN3270 / TN3270E datastream (RFC 1041 / RFC 2355)",
+                "TN5250 / TN5250E datastream (RFC 1205 / RFC 4777)",
+                "EBCDIC code pages CP037 and CP1047",
+                "IND$FILE upload/download (DFT mode)",
+                "Models 3278-2/3/4/5 (24x80 to 27x132)",
+                "5250 models 3179-2, 3196-A1, 3477-FC/FG, 3180-2, 5251-11",
+                "Extended attributes, structured fields, Query Reply",
+                "Connection profiles persisted in localStorage"
+            ]
+        }
     </script>
 
     <!-- ---- Fonts ----------------------------------------------------- -->
@@ -81,15 +83,21 @@
 
     <style>
         :root {
-            --bg:       #050a05;
-            --bg-soft:  #0a1a0a;
-            --fg:       #33ff33;
-            --fg-bright:#9dff9d;
-            --fg-dim:   #1c8a1c;
-            --fg-faint: #0e4a0e;
-            --accent:   #5cf6ff;
-            --amber:    #ffb86c;
-            --red:      #ff6b6b;
+            --bg:        #050a05;
+            --bg-soft:   #0a1a0a;
+            --fg:        #33ff33;
+            --fg-bright: #9dff9d;
+            --fg-dim:    #1c8a1c;
+            --fg-faint:  #0e4a0e;
+            --accent:    #5cf6ff;
+            --amber:     #ffb86c;
+            --red:       #ff6b6b;
+
+            /* IBM i / AS400 column uses a slightly warmer amber tone */
+            --as400:        #ffb86c;
+            --as400-bright: #ffd9a8;
+            --as400-dim:    #a87238;
+            --as400-faint:  #4a3018;
         }
 
         * { box-sizing: border-box; }
@@ -110,31 +118,31 @@
             flex-direction: column;
             min-height: 100vh;
             background:
-                radial-gradient(ellipse at top, var(--bg-soft) 0%, var(--bg) 70%);
+                    radial-gradient(ellipse at top, var(--bg-soft) 0%, var(--bg) 70%);
         }
 
         main {
             flex: 1 0 auto;
             width: 100%;
-            max-width: 920px;
+            max-width: 1400px;
             margin: 0 auto;
             padding: 28px 28px 16px;
         }
 
         /* ---- ASCII logo ------------------------------------------------- */
         .logo {
-            font-size: 13px;
+            font-size: clamp(7px, 1.8vw, 13px);
             line-height: 1.0;
             margin: 0;
             padding: 0;
             white-space: pre;
             color: var(--fg-bright);
             text-align: center;
-            overflow-x: auto;
+            overflow: hidden;
             text-shadow:
-                0 0 2px  rgba(157, 255, 157, 0.85),
-                0 0 8px  rgba( 51, 255,  51, 0.45),
-                0 0 18px rgba( 51, 255,  51, 0.18);
+                    0 0 2px  rgba(157, 255, 157, 0.85),
+                    0 0 8px  rgba( 51, 255,  51, 0.45),
+                    0 0 18px rgba( 51, 255,  51, 0.18);
         }
 
         .tagline {
@@ -153,67 +161,138 @@
             margin: 0 0 22px;
         }
 
-        /* ---- Boot log --------------------------------------------------- */
-        .boot {
-            margin: 16px 0 22px;
-            padding: 10px 14px;
-            border-left: 2px solid var(--fg-faint);
+        /* ---- Split layout ---------------------------------------------- */
+        .split {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 0;
+            margin: 22px 0 0;
+            align-items: stretch;
         }
 
-        .boot-line {
-            display: block;
-            opacity: 0;
-            animation: boot-in 0.05s steps(1, end) forwards;
+        .col {
+            min-width: 0;
+            padding: 0 22px;
         }
 
-        @keyframes boot-in {
-            from { opacity: 0; }
-            to   { opacity: 1; }
+        .col-mainframe { padding-left: 4px; }
+        .col-as400     { padding-right: 4px; }
+
+        /* Central vertical divider with a CRT-ish glow */
+        .divider {
+            width: 1px;
+            background: linear-gradient(
+                    to bottom,
+                    transparent 0%,
+                    var(--fg-faint) 8%,
+                    var(--fg-dim) 50%,
+                    var(--fg-faint) 92%,
+                    transparent 100%
+            );
+            position: relative;
+            box-shadow:
+                    0 0 6px rgba(51, 255, 51, 0.25),
+                    0 0 16px rgba(51, 255, 51, 0.10);
         }
 
-        .ok       { color: var(--fg-bright); font-weight: 600; }
-        .info     { color: var(--fg); }
-        .label    { color: var(--fg-dim); }
-        .strong   { color: var(--fg-bright); }
-        .dim      { color: var(--fg-dim); }
-        .accent   { color: var(--accent); }
-        .amber    { color: var(--amber); }
+        .divider::before,
+        .divider::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            width: 9px;
+            height: 9px;
+            background: var(--bg);
+            border: 1px solid var(--fg-dim);
+            transform: translate(-50%, -50%) rotate(45deg);
+        }
+        .divider::before { top: 0; }
+        .divider::after  { top: 100%; }
 
-        .boot-blank { display: block; height: 0.6em; }
-
-        /* ---- Protocol menu ---------------------------------------------- */
-        .menu {
-            margin: 14px 0 22px;
+        /* ---- Column headers -------------------------------------------- */
+        .col-title {
+            margin: 0 0 4px;
+            padding: 0;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-align: center;
         }
 
-        .menu-rule {
-            color: var(--fg-dim);
+        .col-mainframe .col-title { color: var(--fg-bright); }
+        .col-as400 .col-title     { color: var(--as400-bright); }
+
+        .col-subtitle {
+            margin: 0 0 14px;
+            padding: 0;
+            font-size: 11px;
+            letter-spacing: 2px;
+            text-align: center;
+        }
+
+        .col-mainframe .col-subtitle { color: var(--fg-dim); }
+        .col-as400 .col-subtitle     { color: var(--as400-dim); }
+
+        .col-rule {
             white-space: pre;
             font-size: 13px;
             line-height: 1.0;
-            margin: 0;
-            overflow-x: auto;
+            margin: 0 0 8px;
+            overflow: hidden;
+            text-align: center;
         }
 
-        .menu-title {
+        .col-mainframe .col-rule { color: var(--fg-dim); }
+        .col-as400 .col-rule     { color: var(--as400-dim); }
+
+        .col-banner {
+            font-size: clamp(6px, 1vw, 9px);
+            line-height: 1.0;
+            white-space: pre;
+            margin: 0 0 16px;
+            padding: 0;
+            text-align: center;
+            overflow: hidden;
+        }
+
+        .col-mainframe .col-banner {
+            color: var(--fg);
+            text-shadow:
+                    0 0 2px rgba(157, 255, 157, 0.6),
+                    0 0 6px rgba(51, 255, 51, 0.30);
+        }
+        .col-as400 .col-banner {
+            color: var(--as400);
+            text-shadow:
+                    0 0 2px rgba(255, 217, 168, 0.6),
+                    0 0 6px rgba(255, 184, 108, 0.30);
+        }
+
+        /* ---- Section labels -------------------------------------------- */
+        .section-label {
             display: flex;
-            align-items: center;
+            align-items: baseline;
             justify-content: space-between;
-            color: var(--fg-bright);
-            font-size: 14px;
-            font-weight: 600;
-            letter-spacing: 3px;
-            margin: 8px 0;
-            padding: 0 4px;
-        }
-
-        .menu-title .badge {
-            color: var(--fg-dim);
-            letter-spacing: 1px;
-            font-weight: 400;
             font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            margin: 18px 0 8px;
+            padding: 0 2px;
         }
 
+        .col-mainframe .section-label { color: var(--fg-bright); }
+        .col-as400 .section-label     { color: var(--as400-bright); }
+
+        .section-label .badge {
+            font-size: 11px;
+            font-weight: 400;
+            letter-spacing: 1px;
+        }
+
+        .col-mainframe .section-label .badge { color: var(--fg-dim); }
+        .col-as400 .section-label .badge     { color: var(--as400-dim); }
+
+        /* ---- Menu items ------------------------------------------------ */
         .menu-item {
             display: block;
             padding: 10px 14px;
@@ -224,6 +303,11 @@
             transition: background 0.1s linear, border-color 0.1s linear;
         }
 
+        .col-as400 .menu-item {
+            color: var(--as400);
+            border-left-color: var(--as400-faint);
+        }
+
         .menu-item:hover,
         .menu-item:focus {
             background: rgba(51, 255, 51, 0.08);
@@ -231,9 +315,20 @@
             outline: none;
         }
 
+        .col-as400 .menu-item:hover,
+        .col-as400 .menu-item:focus {
+            background: rgba(255, 184, 108, 0.08);
+            border-left-color: var(--as400-bright);
+        }
+
         .menu-item:hover .menu-num,
         .menu-item:focus .menu-num {
             color: var(--accent);
+        }
+
+        .col-as400 .menu-item:hover .menu-num,
+        .col-as400 .menu-item:focus .menu-num {
+            color: var(--as400-bright);
         }
 
         .menu-head {
@@ -254,14 +349,17 @@
             letter-spacing: 1px;
         }
 
+        .col-as400 .menu-name { color: var(--as400-bright); }
+
         .menu-rfc {
             color: var(--fg-dim);
             font-size: 12px;
         }
 
+        .col-as400 .menu-rfc { color: var(--as400-dim); }
+
         .menu-meta {
             display: block;
-            color: var(--fg);
             margin-top: 6px;
             padding-left: 0;
         }
@@ -273,10 +371,14 @@
             padding-left: 24px;
         }
 
+        .col-as400 .menu-meta-row { color: var(--as400-dim); }
+
         .menu-meta-row::before {
             content: "·  ";
             color: var(--fg-faint);
         }
+
+        .col-as400 .menu-meta-row::before { color: var(--as400-faint); }
 
         .menu-url {
             display: inline-block;
@@ -302,33 +404,12 @@
             font-weight: 600;
         }
 
-        .menu-item.disabled {
-            cursor: not-allowed;
-            opacity: 0.6;
-            border-left-color: var(--fg-faint);
-        }
-
-        .menu-item.disabled:hover,
-        .menu-item.disabled:focus {
-            background: transparent;
-            border-left-color: var(--fg-faint);
-        }
-
-        .menu-item.disabled .menu-num,
-        .menu-item.disabled:hover .menu-num,
-        .menu-item.disabled:focus .menu-num {
-            color: var(--fg-dim);
-        }
-
-        .menu-item.disabled .menu-name {
-            color: var(--fg-dim);
-        }
-
         /* ---- Help / shortcut hints ------------------------------------- */
         .help {
             margin: 22px 0 0;
             color: var(--fg-dim);
             font-size: 13px;
+            text-align: center;
         }
 
         .help-key {
@@ -345,6 +426,8 @@
         .prompt {
             margin: 18px 0 6px;
             color: var(--fg);
+            text-align: left;
+            padding-left: 4px;
         }
 
         .prompt-arrow {
@@ -360,7 +443,8 @@
 
         .prompt-error {
             margin: 4px 0 0 0;
-            padding-left: 50px;
+            text-align: left;
+            padding-left: 52px;
             color: var(--red);
             font-size: 13px;
             letter-spacing: 1px;
@@ -408,8 +492,8 @@
             border: 1px solid transparent;
             border-radius: 2px;
             transition: background 0.1s linear,
-                        border-color 0.1s linear,
-                        color 0.1s linear;
+            border-color 0.1s linear,
+            color 0.1s linear;
         }
 
         .link:hover,
@@ -434,11 +518,38 @@
 
         .link-sep { color: var(--fg-faint); }
 
-        /* ---- Tighter breakpoints --------------------------------------- */
+        /* ---- Responsive: collapse split on narrow screens -------------- */
+        @media (max-width: 980px) {
+            .split {
+                grid-template-columns: 1fr;
+            }
+            .col {
+                padding: 0 4px;
+            }
+            .divider {
+                width: 100%;
+                height: 1px;
+                background: linear-gradient(
+                        to right,
+                        transparent 0%,
+                        var(--fg-faint) 8%,
+                        var(--fg-dim) 50%,
+                        var(--fg-faint) 92%,
+                        transparent 100%
+                );
+                margin: 18px 0;
+            }
+            .divider::before,
+            .divider::after {
+                top: 50%;
+                left: auto;
+            }
+            .divider::before { left: 0; }
+            .divider::after  { left: 100%; }
+        }
+
         @media (max-width: 720px) {
             main { padding: 18px 14px 10px; }
-            .logo { font-size: 9px; }
-            .menu-rule { font-size: 11px; }
             .tagline { letter-spacing: 2px; }
         }
     </style>
@@ -456,92 +567,124 @@
 ██║██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║██║ ╚═╝ ██║
 ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝</pre>
 
-    <p class="tagline">BROWSER-SIDE · MAINFRAME · TERMINAL</p>
+    <p class="tagline">BROWSER-SIDE · MAINFRAME · MIDRANGE · TERMINAL</p>
     <p class="copyright">(C) IRONTERM SYSTEMS · NO BUILD · NO BACKEND</p>
 
-<!--    <div class="boot">-->
-<!--        <span class="boot-line" style="animation-delay: 0.05s;"><span class="dim">POST: scanning hardware capabilities...</span></span>-->
-<!--        <span class="boot-line boot-blank" style="animation-delay: 0.10s;"></span>-->
+    <div class="split">
 
-<!--        <span class="boot-line" style="animation-delay: 0.18s;">[ <span class="ok">OK</span> ] Runtime detected     : <span class="info">WebAssembly + JavaScript</span></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.26s;">[ <span class="ok">OK</span> ] Display engine        : <span class="info">HTMLCanvasElement (2D)</span></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.34s;">[ <span class="ok">OK</span> ] TN3270E datastream    : <span class="info">RFC 1041 / 2355 - loaded</span></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.42s;">[ <span class="ok">OK</span> ] EBCDIC code pages     : <span class="info">CP037 (US), CP1047 (Latin-1/USS)</span></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.50s;">[ <span class="ok">OK</span> ] WebSocket transport   : <span class="info">binary frames, ws:// · wss://</span></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.58s;">[ <span class="ok">OK</span> ] IND$FILE handler      : <span class="info">DFT mode, 16K limit-in/out</span></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.66s;">[ <span class="ok">OK</span> ] Operator Information Area attached</span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.74s;">[ <span class="ok">OK</span> ] Connection profiles   : <span class="info">localStorage available</span></span>-->
-<!--        <span class="boot-line boot-blank" style="animation-delay: 0.78s;"></span>-->
-<!--        <span class="boot-line" style="animation-delay: 0.82s;"><span class="amber">All systems nominal.</span> <span class="dim">Awaiting protocol selection.</span></span>-->
-<!--    </div>-->
+        <!-- ===================== LEFT: MAINFRAME ====================== -->
+        <section class="col col-mainframe" aria-labelledby="col-mainframe-title">
 
-    <div class="menu">
-        <pre class="menu-rule">══════════════════════════════════════════════════════════════════════════════════════════════════════════════</pre>
-        <h2 class="menu-title">
-            <span>▌  AVAILABLE PROTOCOLS</span>
-            <span class="badge">[ 1 ENABLED  ·  1 IN DEV ]</span>
-        </h2>
-        <pre class="menu-rule">══════════════════════════════════════════════════════════════════════════════════════════════════════════════</pre>
+            <h2 id="col-mainframe-title" class="col-title">▌ MAINFRAME ▐</h2>
+            <p class="col-subtitle">SYSTEM/360 · S/370 · S/390 · z/ARCHITECTURE</p>
+            <pre class="col-rule">══════════════════════════════════════════════</pre>
 
-        <a class="menu-item" href="tn3270/">
-            <span class="menu-head">
-                <span class="menu-num">▸ [1]</span>
-                <span class="menu-name">TN3270</span>
-                <span class="menu-rfc">RFC 1041 / 2355  ·  IBM 3270 datastream over TN3270E</span>
-            </span>
-            <span class="menu-meta">
-                <span class="menu-meta-row">Talks to z/OS, VM/CMS, Hercules MVS, TSO, CICS - anything driving a 3278/3279 console</span>
-                <span class="menu-meta-row">Models 2 / 3 / 4 / 5  -  24×80 to 27×132</span>
-                <span class="menu-meta-row">Extended attributes, structured fields, Query Reply, IND$FILE upload/download</span>
-                <span class="menu-meta-row">Default port 23 (telnet) - requires a websockify-style TCP↔WebSocket bridge</span>
-            </span>
-        </a>
+            <pre class="col-banner">z/OS  ·  VM/CMS  ·  MVS  ·  TSO</pre>
 
-        <div class="menu-item disabled" aria-disabled="true">
-            <span class="menu-head">
-                <span class="menu-num">▸ [2]</span>
-                <span class="menu-name">TN5250</span>
-                <span class="menu-status">DEV</span>
-                <span class="menu-rfc">RFC 4777 / 2877  ·  IBM i / AS/400 datastream over TN5250E</span>
-            </span>
-            <span class="menu-meta">
-                <span class="menu-meta-row">Talks to IBM i (formerly AS/400, System i) - 5250 emulator over telnet</span>
-                <span class="menu-meta-row">Models 3179-2, 3196-A1, 3477-FC, 3477-FG  -  24×80, 27×132</span>
-                <span class="menu-meta-row">NEW-ENVIRONMENT subnegotiation (RFC 4777), session negotiation</span>
-                <span class="menu-meta-row">Default port 23 (telnet) - same websockify-style bridge as TN3270</span>
-                <span class="menu-meta-row"><span class="menu-warn">Status: under active development - not yet available</span></span>
-            </span>
-        </div>
+            <div class="section-label">
+                <span>▌ PROTOCOLS</span>
+                <span class="badge">[ 1 ENABLED ]</span>
+            </div>
 
-        <pre class="menu-rule">══════════════════════════════════════════════════════════════════════════════════════════════════════════════</pre>
-    </div>
-
-    <div class="menu">
-        <pre class="menu-rule">══════════════════════════════════════════════════════════════════════════════════════════════════════════════</pre>
-        <h2 class="menu-title">
-            <span>▌  PUBLIC SERVERS</span>
-            <span class="badge">[ 1 AVAILABLE ]</span>
-        </h2>
-        <pre class="menu-rule">══════════════════════════════════════════════════════════════════════════════════════════════════════════════</pre>
-
-        <a class="menu-item"
-           href="tn3270/?bridge=wss%3A%2F%2Ftk5.bencz.cc&amp;port=6080">
-            <span class="menu-head">
-                <span class="menu-num">▸ TK5</span>
-                <span class="menu-name">tk5.bencz.cc</span>
-                <span class="menu-rfc">Hercules MVS 3.8j Turnkey 5  ·  TN3270E  ·  TLS</span>
-            </span>
-            <span class="menu-meta">
-                <span class="menu-meta-row">
-                    Bridge URL: <code class="menu-url">wss://tk5.bencz.cc:6080</code>
+            <a class="menu-item" href="tn3270/">
+                <span class="menu-head">
+                    <span class="menu-num">▸ [1]</span>
+                    <span class="menu-name">TN3270</span>
+                    <span class="menu-rfc">RFC 1041 / 2355</span>
                 </span>
-                <span class="menu-meta-row">Click this row to open the TN3270 client with the bridge URL pre-filled</span>
-                <span class="menu-meta-row">Image source: github.com/bencz/tk5-hercules</span>
-                <span class="menu-meta-row"><span class="menu-warn">Public test server - for testing only. Do not use real credentials.</span></span>
-            </span>
-        </a>
+                <span class="menu-meta">
+                    <span class="menu-meta-row">IBM 3270 datastream over TN3270E</span>
+                    <span class="menu-meta-row">z/OS, VM/CMS, Hercules MVS, TSO, CICS</span>
+                    <span class="menu-meta-row">Models 2 / 3 / 4 / 5  -  24×80 to 27×132</span>
+                    <span class="menu-meta-row">Extended attributes, structured fields, Query Reply</span>
+                    <span class="menu-meta-row">IND$FILE upload/download (DFT mode)</span>
+                    <span class="menu-meta-row">Default port 23 - needs websockify-style TCP↔WebSocket bridge</span>
+                </span>
+            </a>
 
-        <pre class="menu-rule">══════════════════════════════════════════════════════════════════════════════════════════════════════════════</pre>
+            <div class="section-label">
+                <span>▌ PUBLIC SERVERS</span>
+                <span class="badge">[ 1 AVAILABLE ]</span>
+            </div>
+
+            <a class="menu-item"
+               href="tn3270/?bridge=wss%3A%2F%2Ftk5.bencz.cc&amp;port=6080">
+                <span class="menu-head">
+                    <span class="menu-num">▸ TK5</span>
+                    <span class="menu-name">tk5.bencz.cc</span>
+                    <span class="menu-rfc">Hercules MVS 3.8j · TN3270E · TLS</span>
+                </span>
+                <span class="menu-meta">
+                    <span class="menu-meta-row">
+                        Bridge: <code class="menu-url">wss://tk5.bencz.cc:6080</code>
+                    </span>
+                    <span class="menu-meta-row">Click to open the TN3270 client with bridge pre-filled</span>
+                    <span class="menu-meta-row">Image source: github.com/bencz/tk5-hercules</span>
+                    <span class="menu-meta-row"><span class="menu-warn">Public test server</span></span>
+                </span>
+            </a>
+
+        </section>
+
+        <!-- ===================== DIVIDER ============================== -->
+        <div class="divider" aria-hidden="true"></div>
+
+        <!-- ===================== RIGHT: AS/400 ======================== -->
+        <section class="col col-as400" aria-labelledby="col-as400-title">
+
+            <h2 id="col-as400-title" class="col-title">▌ IBM i / AS/400 ▐</h2>
+            <p class="col-subtitle">SYSTEM/38 · AS/400 · iSERIES · SYSTEM i · IBM i</p>
+            <pre class="col-rule">══════════════════════════════════════════════</pre>
+
+            <pre class="col-banner">OS/400  ·  IBM i</pre>
+
+            <div class="section-label">
+                <span>▌ PROTOCOLS</span>
+                <span class="badge">[ 1 BETA ]</span>
+            </div>
+
+            <a class="menu-item" href="tn5250/">
+                <span class="menu-head">
+                    <span class="menu-num">▸ [2]</span>
+                    <span class="menu-name">TN5250</span>
+                    <span class="menu-status">BETA</span>
+                    <span class="menu-rfc">RFC 1205 / 4777</span>
+                </span>
+                <span class="menu-meta">
+                    <span class="menu-meta-row">IBM 5250 datastream over TN5250E</span>
+                    <span class="menu-meta-row">IBM i (formerly AS/400, System i)</span>
+                    <span class="menu-meta-row">Models 3179-2, 3196-A1, 3477-FC/FG, 3180-2, 5251-11</span>
+                    <span class="menu-meta-row">24×80, 27×132 screen sizes</span>
+                    <span class="menu-meta-row">NEW-ENVIRON (RFC 4777): DEVNAME, KBDTYPE, CODEPAGE, bypass-signon</span>
+                    <span class="menu-meta-row">Default port 23 - same websockify-style bridge as TN3270</span>
+                    <span class="menu-meta-row"><span class="menu-warn">Beta: signon and WTD work; ENPTUI (choice fields, menu bars, scroll bars) coming next</span></span>
+                </span>
+            </a>
+
+            <div class="section-label">
+                <span>▌ PUBLIC SERVERS</span>
+                <span class="badge">[ 1 AVAILABLE ]</span>
+            </div>
+
+            <a class="menu-item"
+               href="tn5250/?bridge=wss%3A%2F%2Fpub400.bencz.cc&amp;port=6080">
+                <span class="menu-head">
+                    <span class="menu-num">▸ PUB</span>
+                    <span class="menu-name">pub400.com</span>
+                    <span class="menu-rfc">IBM i public host · TN5250 · TLS</span>
+                </span>
+                <span class="menu-meta">
+                    <span class="menu-meta-row">
+                        Bridge: <code class="menu-url">wss://pub400.bencz.cc:6080</code>
+                    </span>
+                    <span class="menu-meta-row">Click to open the TN5250 client with bridge pre-filled</span>
+                    <span class="menu-meta-row">Free signup at pub400.com for your own user profile</span>
+                    <span class="menu-meta-row"><span class="menu-warn">Public test server</span></span>
+                </span>
+            </a>
+
+        </section>
+
     </div>
 
     <p class="help">
@@ -582,8 +725,8 @@
 
         if (isMobile) {
             alert(
-                '⚠  NOT OPTIMIZED FOR MOBILE\n\n' +
-                'IronTerm and the TN3270 terminal are NOT optimized or designed ' +
+                '\u26A0  NOT OPTIMIZED FOR MOBILE\n\n' +
+                'IronTerm and the TN3270 / TN5250 terminals are NOT optimized or designed ' +
                 'for mobile devices.\n\n' +
                 'The terminal needs a physical keyboard to work properly: ' +
                 'keyboard input, AID keys (Enter, PF, PA, Clear), copy/paste, ' +
@@ -596,6 +739,7 @@
 
     // ---- Interactive prompt --------------------------------------------
     // Type "1" + Enter to navigate to the TN3270 client.
+    // Type "2" + Enter to navigate to the TN5250 client.
     // Backspace removes a char, Esc clears the line.
     (function () {
         var input = '';
@@ -621,7 +765,7 @@
             if (!a || a === document.body || a === document.documentElement) return false;
             var t = a.tagName;
             return t === 'A' || t === 'BUTTON' || t === 'INPUT' ||
-                   t === 'TEXTAREA' || t === 'SELECT' || a.isContentEditable;
+                t === 'TEXTAREA' || t === 'SELECT' || a.isContentEditable;
         }
 
         document.addEventListener('keydown', function (e) {
@@ -633,11 +777,11 @@
                 if (input === '1') {
                     window.location.href = 'tn3270/';
                 } else if (input === '2') {
-                    showError('PROTOCOL 2 (TN5250) IS UNDER DEVELOPMENT - NOT YET AVAILABLE');
+                    window.location.href = 'tn5250/';
                 } else if (input.length === 0) {
-                    showError('ENTER A PROTOCOL NUMBER - TYPE 1 TO CONTINUE');
+                    showError('ENTER A PROTOCOL NUMBER - TYPE 1 OR 2 TO CONTINUE');
                 } else {
-                    showError('INVALID PROTOCOL: "' + input + '" - TYPE 1 TO CONTINUE');
+                    showError('INVALID PROTOCOL: "' + input + '" - TYPE 1 OR 2 TO CONTINUE');
                 }
                 return;
             }

@@ -4,25 +4,10 @@
 // through a <select> next to the bridge URL so users can store host
 // presets and switch between sandboxes (pub400, Hercules, corporate)
 // without retyping every time.
-
-const STORAGE_KEY = 'webterm.tn3270.profiles';
-
-function readAll () {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
-}
-
-function writeAll (list) {
-    try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-    } catch { /* quota / private mode - silently ignore */ }
-}
+//
+// The storage key is supplied by the caller so the TN3270 and TN5250
+// clients keep their profile lists in separate namespaces and can't
+// trample each other's saved hosts.
 
 export class Profiles {
     /**
@@ -31,19 +16,39 @@ export class Profiles {
      * @param {HTMLButtonElement} els.saveBtn
      * @param {HTMLButtonElement} els.deleteBtn
      * @param {object} fields  { bridge, host, port, model } - input/select elements
+     * @param {object} [options]
+     * @param {string} [options.storageKey] localStorage key (default: 'webterm.tn3270.profiles')
      */
-    constructor (els, fields) {
+    constructor (els, fields, options = {}) {
         this.select    = els.select;
         this.saveBtn   = els.saveBtn;
         this.deleteBtn = els.deleteBtn;
         this.fields    = fields;
+        this.storageKey = options.storageKey || 'webterm.tn3270.profiles';
 
-        this.list = readAll();
+        this.list = this.#readAll();
         this.#refreshSelect();
 
         this.select.addEventListener('change', () => this.#applySelected());
         this.saveBtn.addEventListener('click',  () => this.#promptSave());
         this.deleteBtn.addEventListener('click',() => this.#deleteSelected());
+    }
+
+    #readAll () {
+        try {
+            const raw = localStorage.getItem(this.storageKey);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+
+    #writeAll (list) {
+        try {
+            localStorage.setItem(this.storageKey, JSON.stringify(list));
+        } catch { /* quota / private mode - silently ignore */ }
     }
 
     #refreshSelect () {
@@ -98,7 +103,7 @@ export class Profiles {
         } else {
             this.list.push(profile);
         }
-        writeAll(this.list);
+        this.#writeAll(this.list);
         this.#refreshSelect();
         this.select.value = profile.name;
     }
@@ -108,7 +113,7 @@ export class Profiles {
         if (!name) return;
         if (!window.confirm(`Delete profile "${name}"?`)) return;
         this.list = this.list.filter(p => p.name !== name);
-        writeAll(this.list);
+        this.#writeAll(this.list);
         this.#refreshSelect();
     }
 }

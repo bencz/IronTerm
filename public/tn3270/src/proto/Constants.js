@@ -1,40 +1,19 @@
-// All wire-protocol byte values for telnet, TN3270E, and the 3270
-// datastream - kept in one place so the parser, the writer, and the
-// negotiation layer can never disagree about what a byte means.
+// All wire-protocol byte values for TN3270E and the 3270 datastream -
+// kept in one place so the parser, the writer, and the negotiation
+// layer can never disagree about what a byte means.
+//
+// The generic Telnet bits (IAC, DO/DONT/WILL/WONT, SB/SE, BINARY,
+// EOR, TERMINAL-TYPE) live in ../../../shared/src/proto/TelnetConstants.js
+// since they are identical for TN5250.
 
-// ---- Telnet ------------------------------------------------------------
-export const Telnet = Object.freeze({
-    IAC:  0xFF,                     // Interpret As Command
-    DONT: 0xFE,
-    DO:   0xFD,
-    WONT: 0xFC,
-    WILL: 0xFB,
-    SB:   0xFA,                     // Begin subnegotiation
-    GA:   0xF9,
-    EL:   0xF8,
-    EC:   0xF7,
-    AYT:  0xF6,
-    AO:   0xF5,
-    IP:   0xF4,
-    BRK:  0xF3,
-    DM:   0xF2,
-    NOP:  0xF1,
-    SE:   0xF0,                     // End of subnegotiation
-    EOR:  0xEF,                     // End of record (RFC 885 / TN3270)
-});
+import { TelnetOption as SharedTelnetOption } from '../../../shared/src/proto/TelnetConstants.js';
 
-// ---- Telnet options ----------------------------------------------------
+// ---- Telnet option byte for TN3270E -----------------------------------
+// Re-exported here as a frozen extension of the shared option set so old
+// callers keep working and new ones see the full picture.
 export const TelnetOption = Object.freeze({
-    BINARY:        0x00,
-    TERMINAL_TYPE: 0x18,
-    EOR:           0x19,
-    TN3270E:       0x28,
-});
-
-// ---- Terminal-Type subnegotiation --------------------------------------
-export const TermType = Object.freeze({
-    IS:   0x00,
-    SEND: 0x01,
+    ...SharedTelnetOption,
+    TN3270E: 0x28,
 });
 
 // ---- TN3270E subnegotiation (RFC 2355) ---------------------------------

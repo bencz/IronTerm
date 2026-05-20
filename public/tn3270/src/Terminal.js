@@ -7,14 +7,14 @@ import { ScreenBuffer } from './display/ScreenBuffer.js';
 import { Renderer } from './ui/Renderer.js';
 import { InputController } from './ui/InputController.js';
 import { Oia } from './ui/Oia.js';
-import { NvtView } from './ui/NvtView.js';
+import { NvtView } from '../../shared/src/ui/NvtView.js';
 import { TelnetStream } from './net/TelnetStream.js';
-import { WebSocketTransport } from './net/WebSocketTransport.js';
+import { WebSocketTransport } from '../../shared/src/net/WebSocketTransport.js';
 import { InboundParser } from './proto/InboundParser.js';
 import { OutboundBuilder } from './proto/OutboundBuilder.js';
 import { IndFile } from './proto/IndFile.js';
 import { Aid, Models } from './proto/Constants.js';
-import { Ebcdic } from './proto/Ebcdic.js';
+import { Ebcdic } from '../../shared/src/proto/Ebcdic.js';
 
 /** Strip quotes and TSO sub-qualifier syntax from a dataset reference,
  *  then sanitise so the result can be a real filename:

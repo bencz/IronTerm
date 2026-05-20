@@ -13,7 +13,7 @@
 // advance.
 
 import { Attr, Hl } from '../proto/Constants.js';
-import { Ebcdic } from '../proto/Ebcdic.js';
+import { Ebcdic } from '../../../shared/src/proto/Ebcdic.js';
 
 // Decode the 6 packed bits of a Field Attribute byte (the FA, sometimes
 // called the "Start Field Attribute"). Bit 7 is the MDT, bit 5 is the
