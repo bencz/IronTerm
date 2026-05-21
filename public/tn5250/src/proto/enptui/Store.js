@@ -41,7 +41,7 @@ export class EnptuiStore {
     }
 
     /** Remove every construct that lies entirely inside `window`'s
-     *  bounding rectangle. ECL does this when a CreateWindow region is
+     *  bounding rectangle, the way a CreateWindow region is
      *  destroyed - any SelectionField, ScrollBar, Grid, Mouse region
      *  that the host previously anchored INSIDE the window goes away
      *  with it. Returns the removed children for inspection. */

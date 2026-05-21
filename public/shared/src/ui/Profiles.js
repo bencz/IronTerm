@@ -17,14 +17,14 @@ export class Profiles {
      * @param {HTMLButtonElement} els.deleteBtn
      * @param {object} fields  { bridge, host, port, model } - input/select elements
      * @param {object} [options]
-     * @param {string} [options.storageKey] localStorage key (default: 'webterm.tn3270.profiles')
+     * @param {string} [options.storageKey] localStorage key (default: 'ironterm.tn3270.profiles')
      */
     constructor (els, fields, options = {}) {
         this.select    = els.select;
         this.saveBtn   = els.saveBtn;
         this.deleteBtn = els.deleteBtn;
         this.fields    = fields;
-        this.storageKey = options.storageKey || 'webterm.tn3270.profiles';
+        this.storageKey = options.storageKey || 'ironterm.tn3270.profiles';
 
         this.list = this.#readAll();
         this.#refreshSelect();

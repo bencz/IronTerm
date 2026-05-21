@@ -23,91 +23,15 @@
 import { Ebcdic } from '../../../shared/src/proto/Ebcdic.js';
 import { ATTR_BASE, isAttribute, Ffw, Shift, Adjust } from '../proto/Constants.js';
 import { EnptuiStore } from '../proto/enptui/Store.js';
+import { Cell, DEFAULT_ATTR_BYTE, DEFAULT_ATTR_DESC } from './Cell.js';
+import { acceptsByShift, isEbcdicDigit, isEbcdicLetter, EBC_SPACE, EBC_DIGITS_MIN } from './shift-rules.js';
+import { debugFor } from '../../../shared/src/core/debug.js';
 
-const DEFAULT_ATTR_BYTE = 0x20;
-const DEFAULT_ATTR_DESC = ATTR_BASE[DEFAULT_ATTR_BYTE];
+const debug = debugFor('tn5250.screen');
 
-// EBCDIC ranges referenced by shift enforcement and right-adjust:
-//   uppercase letters split across three blocks because of historic
-//   EBCDIC layout (A-I, J-R, S-Z); lowercase the same.
-const EBC_DIGITS_MIN = 0xF0;     // '0'
-const EBC_DIGITS_MAX = 0xF9;     // '9'
-const EBC_SPACE      = 0x40;
-const EBC_DOT        = 0x4B;
-const EBC_COMMA      = 0x6B;
-const EBC_PLUS       = 0x4E;
-const EBC_MINUS      = 0x60;
-
-function isEbcdicDigit (b) { return b >= EBC_DIGITS_MIN && b <= EBC_DIGITS_MAX; }
-function isEbcdicUpper (b) {
-    return (b >= 0xC1 && b <= 0xC9) || (b >= 0xD1 && b <= 0xD9) || (b >= 0xE2 && b <= 0xE9);
-}
-function isEbcdicLower (b) {
-    return (b >= 0x81 && b <= 0x89) || (b >= 0x91 && b <= 0x99) || (b >= 0xA2 && b <= 0xA9);
-}
-function isEbcdicLetter (b) { return isEbcdicUpper(b) || isEbcdicLower(b); }
-function isSignChar (b)     { return b === EBC_DOT || b === EBC_COMMA || b === EBC_MINUS || b === EBC_PLUS || b === EBC_SPACE; }
-
-/** Decide whether `byte` is acceptable in a field with the given FFW
- *  shift-type. Follows the 5250 ref (and tn5250j ScreenField.isValid):
- *
- *   DATA_ALL      0  - any printable byte allowed
- *   DATA_X        1  - alpha shift; anything printable (uppercased
- *                      where applicable, but caller handles monocase)
- *   DATA_A        2  - alpha only: letters + space + . , -
- *   DATA_N        3  - numeric shift: same as DATA_ALL today
- *   DATA_S        4  - numeric only: digits, space, . , - +
- *   DATA_DIGITS   5  - digits 0-9 ONLY
- *   DATA_DBCS     6  - double-byte; we don't policy-check
- *   DATA_SIGNED_N 7  - digits and minus sign only */
+// Re-exported so existing consumers that imported these from ScreenBuffer
+// keep working without an edit.
 export { isEbcdicDigit, isEbcdicLetter, EBC_SPACE, EBC_DIGITS_MIN };
-
-function acceptsByShift (byte, shift) {
-    if (byte < 0x40) return false;        // control bytes never accepted
-    switch (shift) {
-        case Shift.DATA_ALL:
-        case Shift.DATA_X:
-        case Shift.DATA_N:
-        case Shift.DATA_DBCS:
-            return true;
-        case Shift.DATA_A:
-            return isEbcdicLetter(byte) || byte === EBC_SPACE
-                || byte === EBC_DOT || byte === EBC_COMMA || byte === EBC_MINUS;
-        case Shift.DATA_S:
-            return isEbcdicDigit(byte) || isSignChar(byte);
-        case Shift.DATA_DIGITS:
-            return isEbcdicDigit(byte);
-        case Shift.DATA_SIGNED_N:
-            return isEbcdicDigit(byte) || byte === EBC_MINUS;
-        default:
-            return true;
-    }
-}
-
-class Cell {
-    constructor () {
-        this.byte = 0x00;                 // EBCDIC value (or attr byte if attributePlace)
-        this.glyph = ' ';                 // resolved unicode glyph
-        this.attributePlace = false;      // true on cells holding an attribute byte
-        this.attr = DEFAULT_ATTR_DESC;    // active attribute descriptor (from ATTR_BASE)
-        // Field bookkeeping - resolved during walkFields().
-        this.field = null;                // back-reference for input handling
-        this.startField = false;          // true on the cell that opens a field (= attribute byte)
-        // Extended attribute (Write Extended Attribute) pen, if any.
-        // null when the cell uses only the basic attribute pen.
-        this.extAttr = null;
-    }
-
-    reset () {
-        this.byte = 0x00;
-        this.glyph = ' ';
-        this.attributePlace = false;
-        this.attr = DEFAULT_ATTR_DESC;
-        this.field = null;
-        this.startField = false;
-        this.extAttr = null;
-    }
-}
 
 class Field {
     /** Build from the byte stream the host sent in an SF order. */
@@ -115,8 +39,8 @@ class Field {
         this.start  = start;           // index of the attribute byte that opens the field
         this.length = opts.length;     // data-cell count (excludes the attribute cell)
         this.attr   = opts.attr;       // basic attribute byte (0x20-0x3F)
-        this.ffw0   = opts.ffw0 ?? 0;  // first FFW byte (tn5250j "ffw1")
-        this.ffw1   = opts.ffw1 ?? 0;  // second FFW byte (tn5250j "ffw2")
+        this.ffw0   = opts.ffw0 ?? 0;  // first FFW byte
+        this.ffw1   = opts.ffw1 ?? 0;  // second FFW byte
         this.fcws   = opts.fcws ?? [];
 
         // FFW byte 0 — bypass/dup/mdt/shift
@@ -251,9 +175,9 @@ export class ScreenBuffer {
         // is starting over with the screen, so windows/selections that
         // belonged to the previous panel don't carry over.
         this.enptui.clear();
-        // ECL DS5250.java resetRow1Col0Attr(): seed position 0 with a
-        // default green-normal attribute place so the first WTD has a
-        // valid running pen before any host SF/attribute byte.
+        // Seed position 0 with a default green-normal attribute place so
+        // the first WTD has a valid running pen before any host SF or
+        // attribute byte.
         const c0 = this.cells[0];
         c0.byte = DEFAULT_ATTR_BYTE;
         c0.attributePlace = true;
@@ -282,9 +206,9 @@ export class ScreenBuffer {
     }
 
     /** Returns true when PFn (1..24) is enabled by the latest SOH
-     *  pf-mask. The wire bytes are DISABLE masks per tn5250j
-     *  ScreenFields and ECL DS5250 (bit set ⇒ "no data included" for
-     *  that PF, i.e. host refuses the key). Layout:
+     *  pf-mask. The wire bytes are DISABLE masks per the IBM 5250
+     *  reference (bit set ⇒ "no data included" for that PF, i.e. host
+     *  refuses the key). Layout:
      *    pfBytes[0] = PF1 (0x80) … PF8 (0x01)
      *    pfBytes[1] = PF9 (0x80) … PF16(0x01)
      *    pfBytes[2] = PF17(0x80) … PF24(0x01)
@@ -421,9 +345,8 @@ export class ScreenBuffer {
         // 2-digit options like 14, 15, 24) and Library field (length=10,
         // shows "BENCZ1" + 4 nulls in the dump).
         //
-        // Note for future-me: tn5250j is a bit sloppy about this and
-        // some emulators add 1; IBM Host On-Demand (ECL/PS5250) treats
-        // it as data-cells. We follow IBM.
+        // We follow the IBM convention: `length` is the count of data
+        // cells exclusive of the leading attribute byte.
         const start = this.cursor;
         const desc  = ATTR_BASE[attr] ?? DEFAULT_ATTR_DESC;
         const field = new Field(start, { length, attr, ffw0, ffw1, fcws });
@@ -528,23 +451,23 @@ export class ScreenBuffer {
         const r = (here / this.cols | 0) + 1;
         const c = (here % this.cols) + 1;
         if (!f) {
-            console.warn(`[tn5250] typeByte FAIL at idx=${here} (r${r},c${c}): no field; ` +
+            debug.warn(`typeByte FAIL at idx=${here} (r${r},c${c}): no field; ` +
                 `cell.attributePlace=${cell.attributePlace} cell.field=${cell.field ? 'set' : 'null'}`);
             return false;
         }
         if (f.bypass) {
-            console.warn(`[tn5250] typeByte FAIL at idx=${here} (r${r},c${c}): field is bypass; ` +
+            debug.warn(`typeByte FAIL at idx=${here} (r${r},c${c}): field is bypass; ` +
                 `field.start=${f.start} field.length=${f.length} ffw0=0x${f.ffw0.toString(16)}`);
             return false;
         }
         if (cell.attributePlace) {
-            console.warn(`[tn5250] typeByte FAIL at idx=${here} (r${r},c${c}): cell is attributePlace; ` +
+            debug.warn(`typeByte FAIL at idx=${here} (r${r},c${c}): cell is attributePlace; ` +
                 `field.start=${f.start} field.length=${f.length}`);
             return false;
         }
         // Monocase fields (FFW byte 2 bit 0x20) force typed lowercase
         // letters to their uppercase EBCDIC equivalent before storing,
-        // exactly the way IBM Host On-Demand / tn5250j / PCOMM do.
+        // matching the IBM 5250 reference.
         // CP037/CP1047 share the lowercase a-i = 0x81-0x89, j-r =
         // 0x91-0x99, s-z = 0xA2-0xA9; uppercase counterparts are
         // 0xC1-0xC9, 0xD1-0xD9, 0xE2-0xE9. Adding 0x40 maps each block.
@@ -559,7 +482,7 @@ export class ScreenBuffer {
         // nibble). Reject early so the host never sees, e.g., letters
         // in a digits-only field.
         if (!acceptsByShift(b, f.shift)) {
-            console.warn(`[tn5250] typeByte FAIL: byte 0x${b.toString(16)} rejected by shift=${f.shift}`);
+            debug.warn(`typeByte FAIL: byte 0x${b.toString(16)} rejected by shift=${f.shift}`);
             return false;
         }
 

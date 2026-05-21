@@ -15,6 +15,9 @@ import { OutboundBuilder } from './proto/OutboundBuilder.js';
 import { IndFile } from './proto/IndFile.js';
 import { Aid, Models } from './proto/Constants.js';
 import { Ebcdic } from '../../shared/src/proto/Ebcdic.js';
+import { debugFor } from '../../shared/src/core/debug.js';
+
+const debug = debugFor('tn3270.terminal');
 
 /** Strip quotes and TSO sub-qualifier syntax from a dataset reference,
  *  then sanitise so the result can be a real filename:
@@ -205,7 +208,7 @@ export class Terminal {
             this.parser.process(record);
         } catch (err) {
             parseError = err;
-            console.warn('[tn3270] parser error:', err.message);
+            debug.warn('parser error:', err.message);
         }
 
         const wantsResponse  = meta.responseFlag === 0x01 || meta.responseFlag === 0x02;
@@ -375,7 +378,7 @@ export class Terminal {
             this.flashStatus('keyboard locked - wait for the host', 'error', 2000);
             return;
         }
-        const last = localStorage.getItem('webterm.tn3270.lastDataset') ?? '';
+        const last = localStorage.getItem('ironterm.tn3270.lastDataset') ?? '';
         const ds = window.prompt(
             "Dataset to download (no quotes for prefix syntax, quotes for fully qualified):\n" +
             "  HERC01.MY.DATA            → prefixed\n" +
@@ -383,7 +386,7 @@ export class Terminal {
             last);
         if (!ds) return;
         const trimmed = ds.trim();
-        try { localStorage.setItem('webterm.tn3270.lastDataset', trimmed); } catch {}
+        try { localStorage.setItem('ironterm.tn3270.lastDataset', trimmed); } catch {}
         // Quote the dataset if user gave a bare fully-qualified name
         // (contains a dot but isn't already quoted).
         const quoted = (/^['"]/.test(trimmed) || !trimmed.includes('.'))

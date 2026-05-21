@@ -23,8 +23,11 @@ import { ENPTUI_CLASS, Sf, ConstructKind } from './Constants.js';
 import { decodeSelectionField, buildAttachedScrollBar } from './primitives/SelectionField.js';
 import { decodeWindow }         from './primitives/Window.js';
 import { decodeScrollBar }      from './primitives/ScrollBar.js';
+import { debugFor }             from '../../../../shared/src/core/debug.js';
 
-// Grid construct-type values per ECL ENPTUI5250 processDefineGridMinor:
+const debug = debugFor('tn5250.enptui');
+
+// Grid construct-type values per the ENPTUI architecture document:
 const GRID_UPPER_H   = 0;
 const GRID_LOWER_H   = 1;
 const GRID_LEFT_V    = 2;
@@ -110,7 +113,7 @@ export function decodeWdsf (bytes, screen) {
         const cls   =  bytes[pos + 2];
         const minor =  bytes[pos + 3];
         if (len < 4) {
-            console.warn(`[enptui] segment too short (len=${len}) at offset ${pos}`);
+            debug.warn(`segment too short (len=${len}) at offset ${pos}`);
             break;
         }
         const end     = Math.min(pos + len, bytes.length);
@@ -118,7 +121,7 @@ export function decodeWdsf (bytes, screen) {
 
         if (cls !== ENPTUI_CLASS) {
             // Unknown major class - skip this segment but keep parsing.
-            console.warn(`[enptui] unknown class 0x${cls.toString(16)} (minor=0x${minor.toString(16)}), skipping`);
+            debug.warn(`unknown class 0x${cls.toString(16)} (minor=0x${minor.toString(16)}), skipping`);
             pos = end;
             continue;
         }
@@ -165,7 +168,7 @@ function dispatch (minor, payload, screen) {
             return;
         }
         case Sf.WRITE_DATA: {
-            // Three modes per ECL ENPTUI5250.processWriteData():
+            // Three modes per the ENPTUI architecture document:
             //   flag1 bit 0x40 = CCSID-based Unicode write into the
             //     5250 field that owns the current SBA. Payload: flag1,
             //     flag2, ccsidHi, ccsidLo, then up to (field.length * 2)
@@ -182,8 +185,8 @@ function dispatch (minor, payload, screen) {
                 // SBA and overwrite its data cells.
                 const field = screen.fields.find(f => f.start === screen.cursor);
                 if (!field) {
-                    // ECL would raise SC_WSFWriteDataError here.
-                    console.warn('[enptui] WRITE_DATA at cursor with no field present');
+                    // Real hardware would raise SC_WSFWriteDataError here.
+                    debug.warn('WRITE_DATA at cursor with no field present');
                     return;
                 }
                 if (flag1 & 0x40) {
@@ -251,7 +254,7 @@ function dispatch (minor, payload, screen) {
         case Sf.REMOVE_GUI_SEL_FLD: {
             // Remove the selection field / menu bar / push buttons at
             // the cursor, AND any attached scroll bar that referenced
-            // it as parent. ECL ENPTUI5250.removeGUISelectionField does
+            // it as parent. The ENPTUI clear-construct path does
             // the same cascade so the user doesn't see a phantom
             // scrollbar after its list disappears.
             const removedSel = [
@@ -276,7 +279,7 @@ function dispatch (minor, payload, screen) {
             screen.enptui.clear();
             return;
         case Sf.DEFINE_GRID: {
-            // Per ECL ENPTUI5250.processDefineGrid / processDefineGridMinor.
+            // Per the ENPTUI grid definition.
             // Major header (after class+minor):
             //   [0] class-check (must be 0x01)
             //   [1] preFlags1 (0x80 = clear all grid first)
@@ -340,7 +343,7 @@ function dispatch (minor, payload, screen) {
             return;
         }
         case Sf.CLEAR_GRID: {
-            // ECL's CLEAR_GRID clears a rectangle of cells (zeroes the
+            // The CLEAR_GRID minor clears a rectangle of cells (zeroes the
             // grid buffer at those positions) - it does NOT remove the
             // whole construct. Payload: [0] flag, [1..2] reserved,
             // [3] startRow, [4] startCol, [5] width, [6] height.
@@ -364,6 +367,6 @@ function dispatch (minor, payload, screen) {
             return;
         }
         default:
-            console.warn(`[enptui] unknown minor type 0x${minor.toString(16)} (len=${payload.length})`);
+            debug.warn(`unknown minor type 0x${minor.toString(16)} (len=${payload.length})`);
     }
 }

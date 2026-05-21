@@ -47,6 +47,9 @@
 
 import { Cmd, Order, isAttribute } from './Constants.js';
 import { decodeWdsf } from './enptui/WdsfDecoder.js';
+import { debugFor } from '../../../shared/src/core/debug.js';
+
+const debug = debugFor('tn5250.parser');
 
 export class InboundParser {
     constructor (screen) {
@@ -95,7 +98,7 @@ export class InboundParser {
      *
      *  Layout: ( [0x00|0x01]* 0x04 <cmd> <cmd-args...> )*
      *
-     *  Walking the stream this way matches tn5250j's parseIncoming
+     *  Walking the stream this way matches the IBM 5250 reference
      *  (the canonical Java implementation): every command-class byte
      *  arrives at the top level, and we dispatch on it. */
     process (payload) {
@@ -134,12 +137,12 @@ export class InboundParser {
                 case Cmd.CLEAR_UNIT:                 this.screen.clearUnit(); break;
                 case Cmd.CLEAR_UNIT_ALT: {
                     // Clear Unit Alternate is followed by a 1-byte param
-                    // that selects the alternate screen size. Per ECL
-                    // DS5250.java only 0x00 is valid; anything else is
+                    // that selects the alternate screen size. Per the
+                    // IBM 5250 reference only 0x00 is valid; anything else is
                     // an error condition (we surface as a warning).
                     const param = this.pos < this.buf.length ? this.#u8() : 0;
                     if (param !== 0x00) {
-                        console.warn(`[tn5250] CUA with unsupported param 0x${param.toString(16)} — ignoring resize`);
+                        debug.warn(`CUA with unsupported param 0x${param.toString(16)} — ignoring resize`);
                     }
                     this.screen.clearUnit();
                     break;
@@ -156,9 +159,8 @@ export class InboundParser {
                 case Cmd.READ_SCREEN_IMMEDIATE:
                 case Cmd.READ_SCREEN_TO_PRINT:
                     // Host wants the entire presentation space sent
-                    // back verbatim. ECL DS5250.java does this via
-                    // processReadScreen(); the actual response is built
-                    // by Terminal.js using OutboundBuilder.buildReadScreenResponse.
+                    // back verbatim. The actual response is built by
+                    // Terminal.js using OutboundBuilder.buildReadScreenResponse.
                     // We just flag the request so the outer layer fires
                     // the response after the record is fully parsed.
                     this.readScreenRequested = true;
@@ -176,7 +178,7 @@ export class InboundParser {
                 default:
                     // Unknown command. Log and bail rather than trash
                     // the rest of the stream.
-                    console.warn(`[tn5250] unknown command 0x${cmd.toString(16).padStart(2,'0')} at offset ${this.pos - 1}`);
+                    debug.warn(`unknown command 0x${cmd.toString(16).padStart(2,'0')} at offset ${this.pos - 1}`);
                     return;
             }
         }
@@ -213,8 +215,8 @@ export class InboundParser {
                     // be placed into the buffer verbatim at the cursor —
                     // they're "transparent" only in the sense that the
                     // host does not want the parser to interpret them as
-                    // orders or attributes. Real 5250 ref (and IBM ECL/
-                    // PS5250) treat each byte like a plain data byte.
+                    // orders or attributes. Per the IBM 5250 reference,
+                    // each byte is treated like a plain data byte.
                     const len = this.#u16();
                     for (let i = 0; i < len && this.pos < this.buf.length; i++) {
                         this.screen.placeByte(this.#u8());
@@ -261,7 +263,7 @@ export class InboundParser {
                     try {
                         decodeWdsf(body, this.screen);
                     } catch (err) {
-                        console.warn('[enptui] decoder error:', err);
+                        debug.warn('enptui decoder error:', err);
                     }
                     this.pos = end;
                     break;
@@ -280,8 +282,7 @@ export class InboundParser {
     }
 
     /** Control-character bytes 0 and 1 of a WTD command (CC0/CC1).
-     *  Verified byte-for-byte against IBM Host On-Demand ECL DS5250.java
-     *  (lines 4058-4293) and tn5250j tnvt.java (2004-2131).
+     *  Verified byte-for-byte against the IBM 5250 reference.
      *
      *  CC0 - top 3 bits dispatch on 8 cases. Any non-zero high-nibble
      *  locks the keyboard during the WTD; specific cases also reset
@@ -339,7 +340,7 @@ export class InboundParser {
         if (end > this.buf.length) { this.pos = this.buf.length; return; }
 
         const flag1 = (this.pos < end) ? this.#u8() : 0;
-        // Per IBM ref + tn5250j tnvt.java:1873-1935: SOH byte layout
+        // Per the IBM 5250 reference: SOH byte layout
         // after the length byte is flag1, reserved, resequence, errRow,
         // pfMask1, pfMask2, pfMask3 = 7 bytes total. We previously
         // skipped 3 bytes between flag1 and errRow which consumed the
@@ -375,7 +376,7 @@ export class InboundParser {
 
     #orderEa () {
         // EA <row> <col> <length> <length-1 attribute-plane bytes>
-        // Per IBM 5250 ref §3.4.6 and tn5250j tnvt.java:1974-2001 the
+        // Per the IBM 5250 reference §3.4.6, the
         // EA order always carries a length byte after the address, and
         // length-1 additional bytes naming attribute planes to clear
         // (we don't model planes separately, so we consume and ignore
@@ -482,7 +483,7 @@ export class InboundParser {
                 this.screen.clearUnit();
                 this.screen.clearFormatTable();
             } else {
-                console.warn(`[tn5250] WSF unknown (cls=0x${cls.toString(16)} type=0x${type.toString(16)} len=${len}) — acknowledged`);
+                debug.warn(`WSF unknown (cls=0x${cls.toString(16)} type=0x${type.toString(16)} len=${len}) — acknowledged`);
             }
             this.pos = Math.min(segEnd, this.buf.length);
         }

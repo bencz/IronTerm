@@ -7,16 +7,15 @@
 //
 // Wire layout (byte offsets are RELATIVE to the segment payload — i.e.
 // the byte right after `length+class+minor` was already consumed by
-// WdsfDecoder). Verified byte-for-byte against ECL/tn5250/enptui/
-// ENPTUISelectionField.java constructor (lines 185-229) so the offsets
-// stay locked to IBM Host On-Demand's reference reader.
+// WdsfDecoder). Verified byte-for-byte against the IBM ENPTUI
+// architecture document.
 //
 //   [ 0] flag1            bit 0 = field MDT, bits 6-7 unused
 //   [ 1] flag2            bit 7 (0x80) = scrollbar attached
 //   [ 2] flag3
 //   [ 3] selectionType    (SelType.* — MENU_BAR, SINGLE_SEL_FLD, etc.)
 //   [ 4] guiDeviceChar    high nibble 0 = client should draw indicators
-//   [ 5- 8] reserved      (4 bytes — ECL paramInt2 += 5 from guiDeviceChar)
+//   [ 5- 8] reserved      (4 bytes)
 //   [ 9] textSize         number of EBCDIC cells per item label
 //   [10] numOfRows
 //   [11] numOfCols
@@ -70,7 +69,7 @@ const CS_MASK     = 0xC0;
 const CS_SELECTED = 0x40;
 const CS_UNSELECTED = 0x00;
 
-// Palette indices used by ECL/HoD - 8 attribute bytes describing each
+// Palette indices - 8 attribute bytes describing each
 // state the item can be in. The defaults match ENPTUISelectionField's
 // constructor; ChoiceAttributes (minor 0x01) can override any slot.
 //   [0] cursor on available item
@@ -97,7 +96,7 @@ export const AttrIndex = Object.freeze({
 /** Walk a Choice Attributes minor entry and overlay the host's palette
  *  onto `attrs` in place. The flag byte at entry[2] must have its high
  *  bit set; otherwise the entry is malformed and we leave the palette
- *  alone. Per the ECL reader, only EVEN-indexed payload bytes carry
+ *  alone. Per the ENPTUI reference, only EVEN-indexed payload bytes carry
  *  attribute values - odd bytes are reserved alignment padding. */
 function applyChoiceAttrs (entry, attrs) {
     if (entry.length < 5) return;
@@ -149,7 +148,7 @@ export function decodeSelectionField (body, screen) {
     const drawIndicator = !isPB && (guiDeviceChar & 0xF0) === 0x00;
 
     // Scrollbar header (11 bytes) sits between cancelAID and the first
-    // minor structure when flag2 bit 0x80 is set. ECL reads it as a 1-
+    // minor structure when flag2 bit 0x80 is set. The reference reads it as a 1-
     // byte reserved + 4-byte totalRows + 4-byte sliderPos + 2-byte
     // alignment padding. We capture totalRows/sliderPos so the
     // attached scrollbar construct (created after the items are
@@ -196,10 +195,9 @@ export function decodeSelectionField (body, screen) {
     // Real 5250 hardware does this on the client side; we mimic so the
     // existing cell renderer paints text correctly and the ENPTUI
     // overlay only has to swap the raw indicator byte for a fancier
-    // marker. IBM PCOMM / Host On-Demand render the indicator as a
-    // SINGLE cell (just the radio bullet / check glyph) followed by
-    // one space and then the label text — no brackets or parentheses
-    // around it. We mirror that, so itemSlotWidth = (1 indicator + 1
+    // marker. The indicator is a SINGLE cell (just the radio bullet /
+    // check glyph) followed by one space and then the label text — no
+    // brackets or parentheses around it, so itemSlotWidth = (1 indicator + 1
     // space + textSize) + padding, or just textSize + padding when no
     // indicator is drawn (push buttons, menu bars).
     const itemSlotWidth = textSize + numOfNulls + (drawIndicator ? 2 : 0);
@@ -277,7 +275,7 @@ export function decodeSelectionField (body, screen) {
 export function buildAttachedScrollBar (selResult) {
     if (!selResult || !selResult.scrollAttached) return null;
     // Position the bar at the right edge of the field's row block.
-    // ECL anchors it just past the last column of the item layout.
+    // Anchor it just past the last column of the item layout.
     const cols = selResult.numOfCols * selResult.itemSlotWidth;
     return {
         kind: ConstructKind.SCROLL_BAR,
@@ -308,8 +306,8 @@ function parseChoiceText (entry, textSize) {
     //   flag1 0x04 → aidCode byte (push-button AID, F3=Cancel, etc.)
     //   flag1 0x01 → 1 extra byte (numeric single-select index)
     //   flag1 0x02 → 2 extra bytes (numeric double-select index)
-    // followed by an UNCONDITIONAL one-byte advance the ECL/HoD
-    // constructor performs at the bottom of the optionals block —
+    // followed by an UNCONDITIONAL one-byte advance the ENPTUI
+    // reference performs at the bottom of the optionals block —
     // missing this used to shift the text payload one byte left for
     // any entry that advertised a mnemonic or AID, dropping the first
     // character of the label.
@@ -317,7 +315,7 @@ function parseChoiceText (entry, textSize) {
         // Each optional byte both reads AND advances. There is NO extra
         // unconditional advance after the conditional reads - our `p`
         // starts at entry[5] (already past flag3) which corresponds to
-        // ECL's paramInt1 AFTER its L168 unconditional `paramInt1++`.
+        // the position AFTER the ENPTUI reference's unconditional advance.
         // Adding another advance here drops the first byte of the
         // label text and produces "pples" instead of "Apples".
         if ((flag1 & 0x08) !== 0) mnemonicOffset = entry[p++];
@@ -359,7 +357,7 @@ function parseChoiceText (entry, textSize) {
 }
 
 function writeIndicator (screen, baseIdx, item, single, isPB) {
-    // IBM PCOMM / Host On-Demand render ENPTUI selection indicators as
+    // ENPTUI selection indicators render as
     // a single cell — no parens or brackets around them. We paint the
     // raw EBCDIC byte here so that even when the Renderer overlay isn't
     // running the user still sees something meaningful, and the overlay

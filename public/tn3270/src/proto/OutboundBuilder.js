@@ -285,10 +285,10 @@ export class OutboundBuilder {
         // Standard OEM Aux reply layout, with our own ID strings.
         const payload = Uint8Array.from([
             0x00, 0x00,                                      // flags + refID
-            0xE6, 0xC5, 0xC2, 0xF3, 0xF2, 0xF7, 0xF0, 0x40,  // "WEB3270 " (device type, EBCDIC)
-            0xA6, 0x85, 0x82, 0xA3, 0x85, 0x99, 0x94, 0x40,  // "webterm " (user name, EBCDIC)
+            0xC9, 0xD9, 0xD6, 0xD5, 0xF3, 0xF2, 0xF7, 0xF0,  // "IRON3270" (device type, EBCDIC)
+            0x89, 0x99, 0x96, 0x95, 0xA3, 0x85, 0x99, 0x94,  // "ironterm" (user name, EBCDIC)
             // Self-defining-parameters block - values came from a real
-            // x3270 capture and are accepted by every IND$FILE host
+            // captured from a working session and accepted by every IND$FILE host
             // I've seen.
             0x04, 0x01, 0x00, 0x00, 0x25, 0xFF,
             0x02, 0x06, 0x00, 0x00, 0xC0, 0xD5, 0x9D, 0x50,

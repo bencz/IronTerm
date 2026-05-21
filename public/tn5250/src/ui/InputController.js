@@ -8,6 +8,7 @@
 
 import { Aid, aidFromName } from '../proto/Constants.js';
 import { ConstructKind } from '../proto/enptui/Constants.js';
+import { Selection } from './Selection.js';
 
 export class InputController {
     /**
@@ -28,12 +29,22 @@ export class InputController {
         this.renderer = hooks.renderer;
         this.screen = hooks.screen;
 
-        this.selection = null;
-        this.dragOrigin = null;
-        this.dragMoved = false;
+        this.selection = new Selection({
+            canvas:        hooks.canvas,
+            renderer:      hooks.renderer,
+            screen:        hooks.screen,
+            onType:        hooks.onType,
+            onFlash:       hooks.onFlash,
+            onClickCursor: (click) => this.#handleClick(click),
+        });
 
         this.#bindKeyboard();
-        this.#bindMouse();
+    }
+
+    #handleClick (click) {
+        if (this.#tryEnptuiClick(click)) return;
+        const addr = click.row * this.screen.cols + click.col;
+        this.h.onMoveCursor?.(addr);
     }
 
     // ---- keyboard -----------------------------------------------------
@@ -50,13 +61,13 @@ export class InputController {
 
             // Clipboard shortcuts (work offline too).
             if (mod && event.key.toLowerCase() === 'c') {
-                event.preventDefault(); await this.#copy(); return;
+                event.preventDefault(); await this.selection.copy(); return;
             }
             if (mod && event.key.toLowerCase() === 'v') {
-                event.preventDefault(); await this.#paste(); return;
+                event.preventDefault(); await this.selection.paste(); return;
             }
             if (mod && event.key.toLowerCase() === 'a') {
-                event.preventDefault(); this.#selectAll(); return;
+                event.preventDefault(); this.selection.selectAll(); return;
             }
             // Ctrl chords for 5250-specific AIDs not on a function key.
             if (mod && event.key.toLowerCase() === 'h') {
@@ -69,8 +80,8 @@ export class InputController {
             // Alt+letter: ENPTUI mnemonic activation. Walk every
             // selection field / menu bar / push-button group and find
             // the item whose mnemonicOffset designates the typed
-            // character within its label. Mirrors IACS / PCOMM Alt+A
-            // jumping straight to "Apples" in a radio list.
+            // character within its label. Alt+A jumps straight to the
+            // item whose mnemonic is 'A' in a radio list.
             if (event.altKey && !event.ctrlKey && !event.metaKey
                 && event.key.length === 1) {
                 if (this.#tryMnemonic(event.key)) {
@@ -80,9 +91,9 @@ export class InputController {
             }
 
             if (event.key === 'Escape') {
-                if (this.selection) {
+                if (this.selection.hasSelection()) {
                     event.preventDefault();
-                    this.#clearSelection();
+                    this.selection.clear();
                     return;
                 }
                 // Error-reset: clears the operator-input-inhibit lock
@@ -122,10 +133,9 @@ export class InputController {
             if (event.key.length === 1 && !mod) {
                 event.preventDefault();
                 // Space on an ENPTUI item toggles the selection / activates
-                // the push button — IACS, PCOMM and Host On-Demand all
-                // bind space to the focused item rather than typing a
-                // literal space. Fall back to typing only when no item
-                // owns the cursor cell.
+                // the push button — space is bound to the focused item
+                // rather than typing a literal space. Fall back to typing
+                // only when no item owns the cursor cell.
                 if (event.key === ' ') {
                     const hit = this.screen.enptuiItemAtCursor?.();
                     if (hit) {
@@ -193,7 +203,7 @@ export class InputController {
         // window that was created with the "restricted cursor" flag
         // (flag1 bit 0x80 clear in CreateWindow) AND the host hasn't
         // sent UNREST_WIN_CURSOR since, clamp the new position to the
-        // window's interior. Mirrors ECL ENPTUI5250.processCursorMoveInWindow.
+        // window's interior, per the ENPTUI reference.
         const window = this.#enclosingRestrictedWindow(s.cursor);
         if (window) {
             const target = this.#clampToWindow(addr, window);
@@ -233,53 +243,7 @@ export class InputController {
         return (rr - 1) * s.cols + (cc - 1);
     }
 
-    // ---- mouse / selection --------------------------------------------
-
-    #bindMouse () {
-        this.canvas.addEventListener('mousedown', (event) => {
-            if (event.button !== 0) return;
-            this.dragOrigin = this.#cellAtMouse(event);
-            this.dragMoved = false;
-            this.selection = this.#norm(this.dragOrigin, this.dragOrigin);
-            this.renderer.setSelection?.(this.selection);
-        });
-        this.canvas.addEventListener('mousemove', (event) => {
-            if (!this.dragOrigin) return;
-            const cell = this.#cellAtMouse(event);
-            if (cell.row !== this.dragOrigin.row || cell.col !== this.dragOrigin.col)
-                this.dragMoved = true;
-            this.selection = this.#norm(this.dragOrigin, cell);
-            this.renderer.setSelection?.(this.selection);
-        });
-        document.addEventListener('mouseup', () => {
-            if (!this.dragOrigin) return;
-            const wasDrag = this.dragMoved;
-            const click = this.dragOrigin;
-            this.dragOrigin = null;
-            if (!wasDrag) {
-                this.selection = null;
-                this.renderer.setSelection?.(null);
-                // ENPTUI: if the click landed on a radio / checkbox /
-                // push-button item, toggle / activate it instead of
-                // just moving the cursor.
-                if (!this.#tryEnptuiClick(click)) {
-                    const addr = click.row * this.screen.cols + click.col;
-                    this.h.onMoveCursor?.(addr);
-                }
-            }
-        });
-    }
-
-    #cellAtMouse (event) {
-        const rect = this.canvas.getBoundingClientRect();
-        const cw = rect.width  / this.screen.cols;
-        const ch = rect.height / this.screen.rows;
-        const col = Math.max(0, Math.min(this.screen.cols - 1,
-            Math.floor((event.clientX - rect.left) / cw)));
-        const row = Math.max(0, Math.min(this.screen.rows - 1,
-            Math.floor((event.clientY - rect.top) / ch)));
-        return { row, col };
-    }
+    // ---- ENPTUI click handling ----------------------------------------
 
     /** ENPTUI: handle a click that may have landed on a radio button,
      *  checkbox, push button, mouse region or scroll bar. Returns true
@@ -322,8 +286,8 @@ export class InputController {
     }
 
     /** Hit-test a click against the scroll bar's interactive zones and
-     *  fire the appropriate scroll AID. Mirrors ECL's
-     *  getWhereClickedOnScrollBar return codes (1=upArrow, 2=dnArrow,
+     *  fire the appropriate scroll AID. Hit-zone codes (1=upArrow,
+     *  2=dnArrow,
      *  5=pageUp, 6=pageDown, 9=thumb). We don't model arrow buttons as
      *  separate cells - the first and last cell of the bar act as
      *  arrow buttons.
@@ -401,7 +365,7 @@ export class InputController {
             return;
         }
 
-        // Menu bar items: ECL treats a bar click as an AID submission
+        // Menu bar items: a bar click is an AID submission
         // that lets the host repaint with a SINGLE_SEL_PULL or
         // PUSH_BUTTON_PULL submenu anchored below the clicked bar item.
         // Move the cursor onto the item first so the host knows which
@@ -454,75 +418,6 @@ export class InputController {
         cell.glyph = s.ebcdic.toChar(cell.byte);
     }
 
-    #norm (o, e) {
-        return {
-            row1: Math.min(o.row, e.row),
-            col1: Math.min(o.col, e.col),
-            row2: Math.max(o.row, e.row),
-            col2: Math.max(o.col, e.col),
-        };
-    }
-
-    #clearSelection () {
-        this.selection = null;
-        this.renderer.setSelection?.(null);
-    }
-
-    #selectAll () {
-        const s = this.screen;
-        this.selection = { row1: 0, col1: 0, row2: s.rows - 1, col2: s.cols - 1 };
-        this.renderer.setSelection?.(this.selection);
-    }
-
-    // ---- clipboard ----------------------------------------------------
-
-    #selectionToText () {
-        if (!this.selection) return '';
-        const s = this.screen;
-        const lines = [];
-        for (let r = this.selection.row1; r <= this.selection.row2; r++) {
-            let line = '';
-            for (let c = this.selection.col1; c <= this.selection.col2; c++) {
-                const cell = s.cells[r * s.cols + c];
-                if (!cell) continue;
-                line += cell.attr?.hidden ? ' ' : (cell.glyph || ' ');
-            }
-            lines.push(line.replace(/\s+$/, ''));
-        }
-        return lines.join('\n');
-    }
-
-    async #copy () {
-        const text = this.#selectionToText();
-        if (!text) { this.h.onFlash?.('nothing selected'); return; }
-        try {
-            await navigator.clipboard.writeText(text);
-            this.h.onFlash?.(`copied ${text.length} chars`);
-        } catch {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity  = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            try { document.execCommand('copy'); this.h.onFlash?.(`copied ${text.length} chars`); }
-            catch { this.h.onFlash?.('copy failed'); }
-            finally { document.body.removeChild(ta); }
-        }
-    }
-
-    async #paste () {
-        try {
-            const text = await navigator.clipboard.readText();
-            if (!text) return;
-            // 5250 fields are flat; strip line breaks / tabs so they
-            // don't reach the field as literal control characters.
-            const cleaned = text.replace(/[\r\n\t]+/g, ' ');
-            this.h.onType?.(cleaned);
-        } catch {
-            this.h.onFlash?.('paste blocked');
-        }
-    }
 }
 
 export { aidFromName };

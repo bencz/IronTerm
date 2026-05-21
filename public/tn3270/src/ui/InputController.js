@@ -3,9 +3,7 @@
 // Terminal via callback hooks; never touches the wire directly.
 
 import { aidFromName } from '../proto/Constants.js';
-
-const DRAG_PIXEL_THRESHOLD = 3;
-void DRAG_PIXEL_THRESHOLD;
+import { Selection } from './Selection.js';
 
 export class InputController {
     /**
@@ -26,12 +24,16 @@ export class InputController {
         this.renderer = hooks.renderer;
         this.screen = hooks.screen;
 
-        this.selection = null;
-        this.dragOrigin = null;
-        this.dragMoved = false;
+        this.selection = new Selection({
+            canvas:       hooks.canvas,
+            renderer:     hooks.renderer,
+            screen:       hooks.screen,
+            onMoveCursor: hooks.onMoveCursor,
+            onType:       hooks.onType,
+            onFlash:      hooks.onFlash,
+        });
 
         this.#bindKeyboard();
-        this.#bindMouse();
     }
 
     // ---- keyboard -----------------------------------------------------
@@ -45,18 +47,18 @@ export class InputController {
 
             // Clipboard shortcuts work even offline.
             if (mod && event.key.toLowerCase() === 'c') {
-                event.preventDefault(); await this.#copy(); return;
+                event.preventDefault(); await this.selection.copy(); return;
             }
             if (mod && event.key.toLowerCase() === 'v') {
-                event.preventDefault(); await this.#paste(); return;
+                event.preventDefault(); await this.selection.paste(); return;
             }
             if (mod && event.key.toLowerCase() === 'a') {
-                event.preventDefault(); this.#selectAll(); return;
+                event.preventDefault(); this.selection.selectAll(); return;
             }
 
-            if (event.key === 'Escape' && this.selection) {
+            if (event.key === 'Escape' && this.selection.hasSelection()) {
                 event.preventDefault();
-                this.#clearSelection();
+                this.selection.clear();
                 return;
             }
 
@@ -130,119 +132,5 @@ export class InputController {
         if (key === 'ArrowUp')    addr = (addr - s.cols + s.size) % s.size;
         if (key === 'ArrowDown')  addr = (addr + s.cols) % s.size;
         this.h.onMoveCursor?.(addr);
-    }
-
-    // ---- mouse / selection --------------------------------------------
-
-    #bindMouse () {
-        this.canvas.addEventListener('mousedown', (event) => {
-            if (event.button !== 0) return;
-            this.dragOrigin = this.#cellAtMouse(event);
-            this.dragMoved = false;
-            this.selection = this.#norm(this.dragOrigin, this.dragOrigin);
-            this.renderer.setSelection(this.selection);
-        });
-        this.canvas.addEventListener('mousemove', (event) => {
-            if (!this.dragOrigin) return;
-            const cell = this.#cellAtMouse(event);
-            if (cell.row !== this.dragOrigin.row || cell.col !== this.dragOrigin.col)
-                this.dragMoved = true;
-            this.selection = this.#norm(this.dragOrigin, cell);
-            this.renderer.setSelection(this.selection);
-        });
-        document.addEventListener('mouseup', () => {
-            if (!this.dragOrigin) return;
-            const wasDrag = this.dragMoved;
-            const click = this.dragOrigin;
-            this.dragOrigin = null;
-            if (!wasDrag) {
-                this.selection = null;
-                this.renderer.setSelection(null);
-                const addr = click.row * this.screen.cols + click.col;
-                this.h.onMoveCursor?.(addr);
-            }
-        });
-    }
-
-    #cellAtMouse (event) {
-        const rect = this.canvas.getBoundingClientRect();
-        const cw = rect.width  / this.screen.cols;
-        const ch = rect.height / this.screen.rows;
-        const col = Math.max(0, Math.min(this.screen.cols - 1,
-            Math.floor((event.clientX - rect.left) / cw)));
-        const row = Math.max(0, Math.min(this.screen.rows - 1,
-            Math.floor((event.clientY - rect.top) / ch)));
-        return { row, col };
-    }
-
-    #norm (o, e) {
-        return {
-            row1: Math.min(o.row, e.row),
-            col1: Math.min(o.col, e.col),
-            row2: Math.max(o.row, e.row),
-            col2: Math.max(o.col, e.col),
-        };
-    }
-
-    #clearSelection () {
-        this.selection = null;
-        this.renderer.setSelection(null);
-    }
-
-    #selectAll () {
-        const s = this.screen;
-        this.selection = { row1: 0, col1: 0, row2: s.rows - 1, col2: s.cols - 1 };
-        this.renderer.setSelection(this.selection);
-    }
-
-    // ---- clipboard ----------------------------------------------------
-
-    #selectionToText () {
-        if (!this.selection) return '';
-        const s = this.screen;
-        const lines = [];
-        for (let r = this.selection.row1; r <= this.selection.row2; r++) {
-            let line = '';
-            for (let c = this.selection.col1; c <= this.selection.col2; c++) {
-                const cell = s.cells[r * s.cols + c];
-                if (!cell) continue;
-                line += cell.hidden ? ' ' : (cell.glyph || ' ');
-            }
-            lines.push(line.replace(/\s+$/, ''));
-        }
-        return lines.join('\n');
-    }
-
-    async #copy () {
-        const text = this.#selectionToText();
-        if (!text) { this.h.onFlash?.('nothing selected'); return; }
-        try {
-            await navigator.clipboard.writeText(text);
-            this.h.onFlash?.(`copied ${text.length} chars`);
-        } catch {
-            // Fallback for browsers that block the async clipboard API.
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity  = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            try { document.execCommand('copy'); this.h.onFlash?.(`copied ${text.length} chars`); }
-            catch { this.h.onFlash?.('copy failed'); }
-            finally { document.body.removeChild(ta); }
-        }
-    }
-
-    async #paste () {
-        try {
-            const text = await navigator.clipboard.readText();
-            if (!text) return;
-            // 3270 input fields are flat - strip line breaks and tabs so
-            // they don't get typed as literal control chars.
-            const cleaned = text.replace(/[\r\n\t]+/g, ' ');
-            this.h.onType?.(cleaned);
-        } catch {
-            this.h.onFlash?.('paste blocked');
-        }
     }
 }

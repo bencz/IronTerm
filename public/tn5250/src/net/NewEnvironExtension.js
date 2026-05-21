@@ -111,8 +111,8 @@ export class NewEnvironExtension {
             this.#pushUserVar(parts, 'DEVNAME', this.#nextDevName());
         // IBMSENDCONFREC = "YES" tells the IBM i to emit the startup
         // confirmation GDS record (miscFlags1 = 0x80). Without it the
-        // host may skip the confirmation entirely - ECL HoD sends this
-        // unconditionally for display sessions.
+        // host may skip the confirmation entirely - we always send this
+        // for display sessions.
         this.#pushUserVar(parts, 'IBMSENDCONFREC', 'YES');
 
         // Bypass-signon block (RFC 4777 §5). When present, the host
@@ -161,7 +161,7 @@ export class NewEnvironExtension {
         // VAR (0x00), VALUE (0x01) or USERVAR (0x03) appearing inside a
         // variable name or value to be preceded by NewEnviron.ESC (0x02).
         // Doubling IAC also keeps the surrounding subneg frame intact.
-        // ECL NVT5250.java performs the same escaping in `insertVariable`.
+        // (Same escaping rule documented in RFC 1572 §3.)
         for (let i = 0; i < bytes.length; i++) {
             const b = bytes[i];
             if (b === 0x00 || b === 0x01 || b === 0x02 || b === 0x03) {

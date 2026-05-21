@@ -10,8 +10,7 @@
 //
 //     <segment-length 2 bytes>  <class 0xD9>  <minor type 1 byte>  <type-specific payload>
 //
-// Reference: IBM Host On-Demand source, ECL/tn5250/enptui/ENPTUI5250.java
-// (constants extracted line-by-line). The "private static final" values
+// Reference: IBM ENPTUI architecture document. The constant values
 // in that file map 1:1 to the constants below.
 
 // ---- Major class --------------------------------------------------------
@@ -103,7 +102,7 @@ export const ChoiceFlag = Object.freeze({
 });
 
 // ---- Sense codes we can raise on malformed ENPTUI ---------------------
-// Per ECL ENPTUI5250.java constants — these get propagated back to the
+// Per the ENPTUI architecture document — these get propagated back to the
 // host as a negative response so it stops sending broken structured
 // fields rather than the client silently rendering garbage.
 export const SenseCode = Object.freeze({

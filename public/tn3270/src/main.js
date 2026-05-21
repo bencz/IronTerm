@@ -16,11 +16,6 @@ function buildWsUrl (raw, port) {
 }
 
 function main () {
-    // Sentinel log: lets us see in devtools whether the latest code
-    // is actually loaded (vs. a cached older bundle). Bump the date
-    // when adding new diagnostics so you can tell at a glance.
-    console.log('%c[webterm]', 'color:#6cf', 'boot - IND$FILE diagnostic build (2026-05-08)');
-
     const $ = (id) => document.getElementById(id);
 
     const canvas      = $('terminal');
@@ -54,7 +49,7 @@ function main () {
     new Profiles(
         { select: $('profiles'), saveBtn: $('profileSave'), deleteBtn: $('profileDelete') },
         { bridge: bridgeEl, port: portEl, model: modelEl, codePage: codePageEl },
-        { storageKey: 'webterm.tn3270.profiles' },
+        { storageKey: 'ironterm.tn3270.profiles' },
     );
 
     modelEl.addEventListener('change', () => {

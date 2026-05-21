@@ -24,6 +24,9 @@ function pfNumberFor (aid) {
     return null;
 }
 import { Ebcdic } from '../../shared/src/proto/Ebcdic.js';
+import { debugFor } from '../../shared/src/core/debug.js';
+
+const debug = debugFor('tn5250.terminal');
 
 // IBM-5292-2 is the natural default for an ENPTUI-capable client: it's
 // the 5250 model that introduced graphics + enhanced UI primitives, so
@@ -126,9 +129,9 @@ export class Terminal {
             a.click();
             document.body.removeChild(a);
             setTimeout(() => URL.revokeObjectURL(url), 5000);
-            console.log('[tn5250] stream downloaded as .txt file');
+            debug.log('stream downloaded as .txt file');
         } catch (e) {
-            console.warn('[tn5250] could not trigger download:', e);
+            debug.warn('could not trigger download:', e);
         }
         return text;
     }
@@ -217,7 +220,7 @@ export class Terminal {
         if (state.binary) this.nvt.hide();
         if (state.newEnviron) this.oia.setModel('TN5250E');
         else if (state.binary && state.eor) this.oia.setModel('TN5250');
-        console.log('[tn5250] telnet state',
+        debug.log('telnet state',
             { binary: state.binary, eor: state.eor, ttype: state.ttype,
               newEnviron: state.newEnviron });
     }
@@ -229,7 +232,7 @@ export class Terminal {
     handleRecord (record) {
         const decoded = Gds.unwrap(record);
         if (!decoded) {
-            console.warn('[tn5250] dropped non-GDS record:',
+            debug.warn('dropped non-GDS record:',
                 Array.from(record.slice(0, 32)).map(b => b.toString(16).padStart(2,'0')).join(' '),
                 `(len=${record.length})`);
             this.#logRecord('IN ', 0xFF, 0, record);
@@ -237,7 +240,7 @@ export class Terminal {
         }
         const { opcode, flags, miscFlags1, payload } = decoded;
         this.#logRecord('IN ', opcode, flags, payload);
-        console.log(`[tn5250] record opcode=0x${opcode.toString(16).padStart(2,'0')} payload=`,
+        debug.log(`record opcode=0x${opcode.toString(16).padStart(2,'0')} payload=`,
             Array.from(payload.slice(0, 48)).map(b => b.toString(16).padStart(2,'0')).join(' '),
             `(len=${payload.length})`);
 
@@ -248,7 +251,7 @@ export class Terminal {
         // name), NOT a 5250 command sequence. Trying to dispatch it
         // through #process() would crash on the first non-ESC byte.
         if (miscFlags1 === 0x80 || miscFlags1 === 0x90 || miscFlags1 === 0x40) {
-            console.log(`[tn5250] startup/termination record miscFlags1=0x${miscFlags1.toString(16)} — skipping parser dispatch`);
+            debug.log(`startup/termination record miscFlags1=0x${miscFlags1.toString(16)} — skipping parser dispatch`);
             return;
         }
 
@@ -261,9 +264,9 @@ export class Terminal {
                 // Both opcodes are an implicit "invite for input" once
                 // the embedded WTD finishes drawing - the host expects
                 // us to unlock and wait for an AID-bearing reply. This
-                // mirrors tn5250j's pendingUnlock + setInvited flow.
+                // matches the IBM 5250 invite-for-input semantics.
                 try { this.parser.process(payload); }
-                catch (err) { console.warn('[tn5250] parser error:', err); }
+                catch (err) { debug.warn('parser error:', err); }
                 this.parser.readPending = true;
                 this.parser.invited     = true;
                 this.screen.keyboardLocked = false;
@@ -274,7 +277,7 @@ export class Terminal {
                 try {
                     this.parser.process(payload);
                 } catch (err) {
-                    console.warn('[tn5250] parser error:', err);
+                    debug.warn('parser error:', err);
                 }
                 break;
             case GdsConsts.Op.READ_IMMEDIATE:
@@ -324,12 +327,12 @@ export class Terminal {
             // the first focusable position - any SF input field OR
             // ENPTUI radio/checkbox/push-button item, whichever comes
             // first in buffer order. Without the ENPTUI fallback,
-            // screens that have only checkboxes / radios (the IACS
-            // sample test screen) leave the cursor stuck at (1,1).
+            // screens that have only checkboxes / radios leave the
+            // cursor stuck at (1,1).
             const target = this.screen.firstFocusable();
             if (target !== null) this.screen.cursor = target;
         }
-        console.log(`[tn5250] after record: fields=${this.screen.fields.length} cursor=${this.screen.cursor} readPending=${this.parser.readPending}`);
+        debug.log(`after record: fields=${this.screen.fields.length} cursor=${this.screen.cursor} readPending=${this.parser.readPending}`);
         this.draw();
     }
 
@@ -355,7 +358,7 @@ export class Terminal {
             this.draw();
             return;
         }
-        console.log(`[tn5250] sendAid 0x${aidByte.toString(16).padStart(2,'0')} at row=${(this.screen.cursor/this.screen.cols|0)+1} col=${(this.screen.cursor%this.screen.cols)+1}`);
+        debug.log(`sendAid 0x${aidByte.toString(16).padStart(2,'0')} at row=${(this.screen.cursor/this.screen.cols|0)+1} col=${(this.screen.cursor%this.screen.cols)+1}`);
         if (aidByte === Aid.HELP) {
             this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
                              this.builder.buildAidResponse(aidByte),

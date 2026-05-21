@@ -13,8 +13,6 @@ function buildWsUrl (raw, port) {
 }
 
 function main () {
-    console.log('%c[webterm]', 'color:#6cf', 'boot - TN5250 beta (2026-05-11)');
-
     const $ = (id) => document.getElementById(id);
 
     const canvas      = $('terminal');
@@ -50,7 +48,7 @@ function main () {
         { select: $('profiles'), saveBtn: $('profileSave'), deleteBtn: $('profileDelete') },
         { bridge: bridgeEl, port: portEl, model: modelEl, codePage: codePageEl,
           devname: devnameEl, user: userEl },
-        { storageKey: 'webterm.tn5250.profiles' },
+        { storageKey: 'ironterm.tn5250.profiles' },
     );
 
     modelEl.addEventListener('change', () => {

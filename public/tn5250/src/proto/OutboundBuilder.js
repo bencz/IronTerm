@@ -97,8 +97,7 @@ export class OutboundBuilder {
         out.push(0x11, row, col);                 // SBA row col
 
         // Collect the field's data bytes first. `f.length` is the count
-        // of data cells (per IBM SF order semantics, matching ECL/PS5250
-        // and tn5250j).
+        // of data cells (per IBM SF order semantics).
         const bytes = new Array(f.length).fill(EBC_SPACE);
         for (let i = 0; i < f.length; i++) {
             const idx = (startData + i) % this.screen.size;
@@ -130,8 +129,8 @@ export class OutboundBuilder {
     }
 
     #isShortRead (aid) {
-        // ECL DS5250.java line 5059 enumerates the AIDs that submit
-        // ONLY cursor row+col+AID with no field data:
+        // Per the 5250 reference, these AIDs submit ONLY cursor
+        // row+col+AID with no field data:
         //   0xBD CLEAR
         //   0x6B / 0x6C / 0x6E  (PA1 / PA2 / PA3 - we don't bind keys
         //                       to these yet but the predicate stays)
@@ -147,10 +146,9 @@ export class OutboundBuilder {
 
     // ---- Query response (RFC 1205 §5.3) -------------------------------
 
-    /** 64-byte Query reply. Byte layout verified against IBM HoD ECL
-     *  DS5250.java `processWSF()` (line ~3559). `enhanced=true` lights
-     *  up the ENPTUI capability + window-headers bits the actual
-     *  primitives are decoded by enptui/WdsfDecoder.js. */
+    /** 64-byte Query reply. Byte layout per the IBM 5250 reference.
+     *  `enhanced=true` lights up the ENPTUI capability + window-headers
+     *  bits; the actual primitives are decoded by enptui/WdsfDecoder.js. */
     buildQueryResponse (enhanced = true) {
         const a = new Uint8Array(64);
         a[0] = 0x00;                // cursor row (0 = none in a WSF reply)
@@ -158,8 +156,8 @@ export class OutboundBuilder {
         a[2] = 0x88;                // inbound write-structured-field AID
         // Segment length field. Per IBM 5250 ref the value is the count
         // of bytes from the length field through the end of the segment
-        // (i.e. 64 - 3 = 61 bytes). ECL ships 0x0044 = 68 for a 74-byte
-        // GDS frame, but our payload IS the 64-byte frame so 61 is the
+        // (i.e. 64 - 3 = 61 bytes). Some hosts ship 0x0044 = 68 for a
+        // 74-byte GDS frame, but our payload IS the 64-byte frame so 61 is the
         // value that matches the byte count emitted.
         a[3] = 0x00;
         a[4] = 61;
@@ -168,32 +166,31 @@ export class OutboundBuilder {
         a[7] = 0x80;                // flag byte
         a[8] = 0x06;                // controller hardware class ...
         a[9] = 0x00;                //   ... 0x0600 = "Other WSF / emulator"
-        a[10] = 0x03;               // code level - ECL: V3R2.0
+        a[10] = 0x03;               // code level - V3R2.0
         a[11] = 0x02;
         a[12] = 0x00;
         // 13-28 reserved (zeroed by Uint8Array initialiser)
         a[29] = 0x01;               // device type 0x01 = 5250 emulator
-        // Device model EBCDIC string. ECL ships "3179002" for a colour
-        // SB session; we follow exactly so PUB400 reports the device as
-        // a 3179-2 (the only SB model IBM treats as "ENPTUI-capable"
-        // without extra negotiation).
+        // Device model EBCDIC string: "3179002" for a colour SB session
+        // so PUB400 reports the device as a 3179-2 (the only SB model
+        // IBM treats as "ENPTUI-capable" without extra negotiation).
         a[30] = 0xF3; a[31] = 0xF1; a[32] = 0xF7;   // 3 1 7
         a[33] = 0xF9; a[34] = 0xF0; a[35] = 0xF0;   // 9 0 0
         a[36] = 0xF2;                               // 2
-        a[37] = 0x01;               // keyboard id - ECL value
-        a[38] = 0x01;               // extended keyboard id - ECL value
+        a[37] = 0x01;               // keyboard id
+        a[38] = 0x01;               // extended keyboard id
         a[39] = 0x00;               // reserved
         a[40] = 0x00; a[41] = 0x24; a[42] = 0x24; a[43] = 0x00;  // serial
-        a[44] = 0x01; a[45] = 0xF4;  // max display fields = 500 (ECL value)
+        a[44] = 0x01; a[45] = 0xF4;  // max display fields = 500
         // 46-48: reserved
-        a[49] = 0x70; a[50] = 0x12;  // controller display capability (ECL bytes)
-        // Bytes 53/54 advertise enhanced/ENPTUI support per ECL:
+        a[49] = 0x70; a[50] = 0x12;  // controller display capability
+        // Bytes 53/54 advertise enhanced/ENPTUI support:
         //   0x0F / 0xC8 = full ENPTUI (windows, selection fields, push
         //                 buttons, scroll bars, headers/footers, grids)
         a[53] = enhanced ? 0x0F : 0x00;
         a[54] = enhanced ? 0xC8 : 0x00;
-        a[60] = 0x7B;               // ECL always writes 0x7B here
-        a[61] = 0x11;               // model byte - ECL 24x80 = 0x11 (27x132 = 0x31)
+        a[60] = 0x7B;               // reserved; constant on hardware
+        a[61] = 0x11;               // model byte - 24x80 = 0x11 (27x132 = 0x31)
         return a;
     }
 

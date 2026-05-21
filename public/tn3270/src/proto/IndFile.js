@@ -40,6 +40,9 @@
 //   46/08 + ErrorRecord(EOF)           upload complete
 
 import { Aid } from './Constants.js';
+import { debugFor } from '../../../shared/src/core/debug.js';
+
+const log = debugFor('tn3270.indfile');
 
 const TYPE = 0xD0;
 
@@ -136,7 +139,7 @@ export class IndFile {
     }
 
     #log (...args) {
-        if (this.debug) console.log('[IND$FILE]', ...args);
+        if (this.debug) log.log(...args);
     }
 
     reset () {

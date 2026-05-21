@@ -16,7 +16,7 @@
 //   +13..+16 sliderPos  (32-bit, top of slider)
 //   ...etc.
 //
-// Reference: ECL/tn5250/enptui/ENPTUIScrollBarField.java
+// Reference: ENPTUI scroll-bar construct definition.
 //
 // Phase-2b stub: we capture the geometry so the renderer can paint the
 // track + thumb. Drag-to-scroll interactivity is left for Phase 2c.

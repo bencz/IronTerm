@@ -2,9 +2,8 @@
 //
 // A Window draws a rectangular box on the screen with optional title
 // and footer text, and indicates the "interior" cells the user should
-// see as the active area. Real layout per ECL/tn5250/enptui/
-// ENPTUIWindow.java constructor (lines 258-345) and processMinor*
-// helpers:
+// see as the active area. Real layout per the ENPTUI architecture
+// document:
 //
 //   payload[0]  flag1
 //   payload[1]  flag2 / mono
@@ -25,11 +24,11 @@ import { ConstructKind, BorderStyle, LineStyle } from '../Constants.js';
 const MINOR_BORDER       = 0x01;
 const MINOR_TITLE_FOOTER = 0x10;
 
-// IBM PCOMM / HoD default border glyph palette (CP037 EBCDIC codes):
+// Default border glyph palette (CP037 EBCDIC codes):
 //   topLeft, top, topRight, leftSide, rightSide, botLeft, bot, botRight
 const DEFAULT_BORDERS = [0xC4, 0xC4, 0xBF, 0xB3, 0xB3, 0xC0, 0xC4, 0xD9];
 
-// Non-display attribute bytes (ECL ENPTUIWindow.isNonDisplayBorder).
+// Non-display attribute bytes.
 // When the border's "presentation attribute" matches any of these the
 // window has NO visible border - the host wants only the interior to
 // show, no rectangle drawn around it.
@@ -49,7 +48,7 @@ export function decodeWindow (body, screen) {
     const sfRow = (screen.cursor / screen.cols | 0);
     const sfCol = (screen.cursor % screen.cols);
 
-    // Per ECL ENPTUIWindow constructor:
+    // Per the ENPTUI window construct:
     //   flag1 bit 0x80 = cursor unrestricted (else: stay in window)
     //   flag1 bit 0x40 = menu-pull-down (skip top border row to glue
     //                    visually to the parent menu bar)
@@ -101,7 +100,7 @@ function applyBorder (entry, result) {
     if (entry.length < 3) return;
     const flag = entry[2];
     // The first byte after the flag is the border presentation
-    // attribute (5250 attribute byte). ECL inspects this byte against
+    // attribute (5250 attribute byte). Inspect this byte against
     // the non-display attribute set; when matched we hide the border
     // entirely. Then the next 8 bytes (when flag's high bit is set)
     // are the border glyph palette override.
@@ -115,7 +114,7 @@ function applyBorder (entry, result) {
     for (let i = 0; i < 8; i++) result.borders[i] = entry[5 + i];
 }
 
-/** Title/Footer minor (0x10). Layout per ECL processTitleFooter:
+/** Title/Footer minor (0x10). Layout per the ENPTUI reference:
  *    entry[0] minorLen
  *    entry[1] minorType (0x10)
  *    entry[2] flag (0x20 = footer, else title; 0x40/0x80 = alignment)

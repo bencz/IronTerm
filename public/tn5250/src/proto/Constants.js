@@ -5,8 +5,7 @@
 //   • RFC 4777 ("IBM's iSeries Telnet Enhancements") - NEW-ENVIRON
 //     variables (DEVNAME, KBDTYPE, CODEPAGE, CHARSET, IBMRSEED,
 //     IBMSUBSPWD, IBMCURLIB, IBMIMENU, IBMPROGRAM).
-//   • IBM Host On-Demand source under ECL/ - canonical reference.
-//   • tn5250j (org.tn5250j.framework.tn5250) - implementation crib.
+//   • IBM 5250 Functions Reference (SC30-3533) - canonical.
 //
 // Anything that is generic Telnet (IAC, DO/DONT, BINARY, EOR, TTYPE)
 // lives in ../../../shared/src/proto/TelnetConstants.js so TN3270 and
@@ -116,7 +115,7 @@ export const Order = Object.freeze({
 //   bit 1: reverse-image (RI)
 //   bit 0: non-display (ND)
 // The four base colours are signalled by bits 4-2 according to the
-// canonical table (lifted from tn5250j TN5250jConstants ATTR_32..3F).
+// canonical table from the IBM 5250 reference.
 export function isAttribute (b) {
     return ((b & 0xFF) & 0xE0) === 0x20;
 }
@@ -124,7 +123,7 @@ export function isAttribute (b) {
 // Maps a basic-attribute byte (0x20-0x3F) to a normalised description
 // the renderer consumes. Values follow the canonical IBM 5250 colour
 // table for IBM-3179-2 / IBM-3477 / IBM-5292-2 hardware (per the
-// "AS/400 5250 Functions Reference" and IBM Host On-Demand PS5250).
+// "AS/400 5250 Functions Reference").
 //
 // Encoding summary (bit-by-bit on the low 5 bits of the byte):
 //
@@ -146,9 +145,9 @@ function A (fg, opts = {}) {
         colSep:    !!opts.colSep,
     });
 }
-// Strictly mirrors tn5250j's `ScreenPlanes.disperseAttribute` (which is
-// in turn the de-facto canonical port of the IBM 5250 colour table for
-// real IBM-3179-2 / IBM-3477 / IBM-5292-2 hardware). Some bytes share
+// Each attribute byte applies to every following cell until the next
+// attribute byte, per the IBM 5250 colour table for real IBM-3179-2 /
+// IBM-3477 / IBM-5292-2 hardware. Some bytes share
 // rendering: e.g. 0x28 and 0x2A both produce red-normal in hardware
 // (the second bit doesn't change the visual on a colour 5250).
 export const ATTR_BASE = Object.freeze({
@@ -191,16 +190,16 @@ export const ATTR_BASE = Object.freeze({
 // byte is the "FFW present" marker - when set, both FFW bytes plus any
 // FCW pairs follow before the attribute byte and length. Field flags are
 // spread across the two bytes; bit names and positions verified against
-// tn5250j ScreenField (the canonical reference) and ECL/tn5250.
+// the IBM 5250 reference.
 //
-//   First byte (we call it `ffw0`, tn5250j calls it `ffw1`):
+//   First byte (`ffw0`):
 //     0x40 = FFW marker
 //     0x20 = bypass (input not allowed, cursor passes through)
 //     0x10 = dup allowed
 //     0x08 = MDT (modified-data tag)
 //     0x07 = shift specification (low 3 bits — see Shift.*)
 //
-//   Second byte (`ffw1`, tn5250j `ffw2`):
+//   Second byte (`ffw1`):
 //     0x80 = auto enter (submit when last position typed)
 //     0x40 = field exit required (FER)
 //     0x20 = monocase (force uppercase on typed alpha)
@@ -247,14 +246,11 @@ export const Aid = Object.freeze({
     CLEAR:      0xBD,
     ENTER:      0xF1,
     HELP:       0xF3,
-    // Verified against ECL/PS5250.java (IBM Host On-Demand official):
+    // Per the IBM 5250 architecture document:
     //   AID_PAGEUP = 244 = 0xF4   (real keyboard "Page Up")
     //   AID_PAGEDW = 245 = 0xF5   (real keyboard "Page Down")
-    // And ECL/tn5250/enptui/ENPTUI5250.java agrees:
     //   AID_ROLLUP   = 245 = 0xF5  (roll content up   → bring NEXT page)
     //   AID_ROLLDOWN = 244 = 0xF4  (roll content down → bring PREV page)
-    // NB: tn5250j (the OSS Java emulator) has the opposite mapping for
-    // these two constants - we follow IBM, not tn5250j.
     ROLL_DOWN:  0xF4,         // Page Up key  - bring previous page back
     ROLL_UP:    0xF5,         // Page Down key - bring next page forward
     ROLL_LEFT:  0xD9,

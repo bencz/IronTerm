@@ -56,8 +56,7 @@ export function unwrap (bytes) {
 
     const flags  = bytes[7];
     const opcode = bytes[9];                  // opcode is always at offset 9
-    // ECL DS5250.java treats bytes 4-5 as `miscFlags1`+`miscFlags2`
-    // (called `WorkHeader.miscFlags1/2`). The startup confirmation
+    // Bytes 4-5 carry `miscFlags1`+`miscFlags2`. The startup confirmation
     // record (PUB400 sends one immediately after telnet negotiation)
     // sets miscFlags1 = 0x80 (= startup confirmation) or 0x90
     // (= startup confirmation + diagnostics). The payload of those

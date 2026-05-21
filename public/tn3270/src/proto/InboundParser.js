@@ -12,6 +12,9 @@ import {
     Cmd, Order, Wcc, Sf, isWriteCommand, isEraseWrite, isAlternate,
 } from './Constants.js';
 import { BufferAddress } from './BufferAddress.js';
+import { debugFor } from '../../../shared/src/core/debug.js';
+
+const log = debugFor('tn3270.parser');
 
 export class InboundParser {
     /** @param {import('../display/ScreenBuffer.js').ScreenBuffer} buffer
@@ -47,7 +50,7 @@ export class InboundParser {
         const cmd = record[0];
         if (this.debug) {
             const peek = Array.from(record).slice(0, 16).map(b => b.toString(16).padStart(2,'0')).join(' ');
-            console.log(`[parser] cmd=${cmd.toString(16).padStart(2,'0')} len=${record.length} ${peek}${record.length>16?' …':''}`);
+            log.log(`cmd=${cmd.toString(16).padStart(2,'0')} len=${record.length} ${peek}${record.length>16?' …':''}`);
         }
 
         if (isWriteCommand(cmd)) {
@@ -287,7 +290,7 @@ export class InboundParser {
     #processSf (type, body) {
         if (this.debug) {
             const hex = Array.from(body).slice(0, 24).map(b => b.toString(16).padStart(2,'0')).join(' ');
-            console.log(`[parser] WSF SF type=${type.toString(16).padStart(2,'0')} bodyLen=${body.length} body=${hex}${body.length>24?' …':''}`);
+            log.log(`WSF SF type=${type.toString(16).padStart(2,'0')} bodyLen=${body.length} body=${hex}${body.length>24?' …':''}`);
         }
         switch (type) {
             case Sf.READ_PARTITION:
