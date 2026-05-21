@@ -1,25 +1,28 @@
 # IronTerm
 
-Browser-side IBM 3270 terminal and IBM 5250 ( BETA ). No backend, no server-side code, no
-runtime build step - just static files served over HTTP. The 3270
-datastream and TN3270E telnet negotiation are implemented in plain
-JavaScript modules running in the page; the page connects to the
-mainframe through any websockify-style TCP↔WebSocket relay.
+Browser-side IBM 3270 terminal, plus a 5250 client for IBM i / AS/400
+(beta). No backend, no server-side code, no runtime build step - just
+static files served over HTTP. The datastreams and TN3270E / TN5250E
+telnet negotiation are implemented in plain JavaScript modules running
+in the page; the page connects to the host through any websockify-style
+TCP↔WebSocket relay.
 
 ## Quick start
 
 You need three things: this repo, a static HTTP server, and a
-WebSocket-to-TCP bridge that forwards binary frames to your mainframe.
+WebSocket-to-TCP bridge that forwards binary frames to your host.
 
 ### 1. Serve the static files
 
 ```sh
 cd public
 python3 -m http.server 8080
-# → open http://localhost:8080/tn3270/
+# → open http://localhost:8080/
 ```
 
-Any static server works; nothing in the project requires a build step.
+The index page lets you pick the protocol - **1** opens the TN3270
+client (`/tn3270/`), **2** opens the TN5250 client (`/tn5250/`). Any
+static server works; nothing in the project requires a build step.
 
 ### 2. Run a TCP↔WebSocket bridge
 
@@ -34,17 +37,20 @@ For multi-target routing, websockify also supports a token file or you
 can put an nginx in front. The terminal sends `binary` as the WebSocket
 subprotocol; websockify accepts it by default.
 
-**Or skip running your own bridge** - a public test instance of
-[tk5-hercules](https://github.com/bencz/tk5-hercules) (Hercules MVS 3.8j
-Turnkey 5) is up at:
+**Or skip running your own bridge** - two public test instances are
+already up:
 
 ```
-wss://tk5.bencz.cc:6080
+wss://tk5.bencz.cc:6080        (Hercules MVS 3.8j Turnkey 5 - for TN3270)
+wss://pub400.bencz.cc:6080     (pub400.com IBM i - for TN5250)
 ```
 
-Drop that URL into the bridge field and connect - no setup needed.
-TLS is terminated at the bridge, so the page works fine when served
-over HTTPS. For testing only; don't use real credentials.
+The MVS image is from [tk5-hercules](https://github.com/bencz/tk5-hercules);
+the IBM i side relays to [pub400.com](https://pub400.com), where you
+can register a free user profile. Drop the URL into the bridge field
+and connect - no setup needed. TLS is terminated at the bridge, so the
+page works fine when served over HTTPS. For testing only; don't use
+real credentials.
 
 ### 3. Configure the page
 
@@ -118,7 +124,7 @@ Implicit Partition.
 - Compressed mode (`IND$FILE GET ... COMP`) is detected and refused
   with a clear message - use the default uncompressed transfer.
 
-**Models supported:**
+**Models supported (3270):**
 
 | Model | Rows × Cols | TerminalType      |
 |-------|-------------|-------------------|
@@ -138,6 +144,67 @@ Implicit Partition.
 - Rule cross-hair (toggle in toolbar)
 - NVT overlay for ASCII banners before BINARY is negotiated
 - Connection profiles persisted in `localStorage`
+
+
+## TN5250 (beta)
+
+The 5250 client lives under `/tn5250/` and shares the toolbar, OIA,
+canvas renderer, profile store, and EBCDIC tables with the 3270 side -
+only the wire protocol and the datastream parser are separate.
+
+It's tagged **beta** because it has had a lot less mileage on real
+hardware than the 3270 side. Signon, WTD, input fields and AID keys
+work against pub400 and IBM i 7.x; ENPTUI is wired up but not all
+primitives have been exercised end-to-end. Expect rough edges - please
+file issues with a screenshot and the host you hit them on.
+
+**Telnet / TN5250E (RFC 1205, RFC 4777):**
+
+- BINARY, EOR, TERMINAL-TYPE, NEW-ENVIRON negotiation
+- NEW-ENVIRON variables: `DEVNAME`, `KBDTYPE`, `CODEPAGE`, `CHARSET`,
+  and the bypass-signon set (`IBMRSEED`, `USER`, `IBMSUBSPWD`)
+- 10-byte GDS record header on inbound and outbound records
+- GDS opcodes: NO-OP, INVITE, OUTPUT-ONLY, PUT-GET, SAVE/RESTORE-SCREEN,
+  READ-IMMEDIATE, MESSAGE-LIGHT on/off
+- ATTN / SYSREQ flags surfaced through the OIA
+
+**5250 datastream:**
+
+- Commands: `WTD`, `WEC`, `WECW` (write error code to window),
+  `CLEAR-UNIT`, `CLEAR-UNIT-ALT`, `CLEAR-FORMAT-TABLE`,
+  `READ-INPUT-FIELDS`, `READ-MDT-FIELDS`, `READ-MDT-IMMEDIATE-ALT`,
+  `READ-SCREEN-IMMEDIATE`, `READ-SCREEN-TO-PRINT`,
+  `WRITE-STRUCTURED-FIELD`, `SAVE-SCREEN`, `RESTORE-SCREEN`, `ROLL`
+- Orders: `SOH`, `RA`, `EA`, `ESC`, `TD`, `SBA`, `WEA`, `IC`, `MC`,
+  `WTDSF`, `SF`
+- Basic attribute table (0x20-0x3F) - color, reverse, underline,
+  blink, column separator, non-display
+- Field Format Word - bypass, dup, MDT, auto-enter, FER, monocase,
+  mandatory, right-adjust / zero-fill
+- AID keys: Enter, Clear, Help, PF1-24, Roll Up / Down / Left / Right,
+  Print, Attn, SysReq
+- Bypass-signon: optional `USER` / password fields in the toolbar
+  short-circuit the standard signon panel (RFC 4777 §5)
+
+**ENPTUI (partial):**
+
+- WDSF (Write to Display Structured Field) decoder
+- Primitives: Window, ScrollBar, Selection Field
+- Not yet covered: menu bars, choice presentation with cursor
+  progression, the full set of WDSF minor structures
+
+**Models supported (5250):**
+
+| Model       | Rows × Cols | Notes                  |
+|-------------|-------------|------------------------|
+| `5251-11`   | 24 × 80     | mono                   |
+| `5291-1`    | 24 × 80     | mono                   |
+| `5292-2`    | 24 × 80     | color, ENPTUI (default)|
+| `3196-A1`   | 24 × 80     | mono                   |
+| `3179-2`    | 24 × 80     | color                  |
+| `3180-2`    | 27 × 132    | mono                   |
+| `3477-FC`   | 27 × 132    | color                  |
+| `3477-FG`   | 27 × 132    | mono                   |
 
 
 ## Encoding
@@ -171,9 +238,14 @@ won't surface a TLS prompt during a WebSocket handshake.
 
 ## What's not implemented
 
-This is the realistic gap list. Everything here is fixable; nothing
-blocks day-to-day TSO / CICS use as far as I've tested.
+This is the realistic gap list. Nothing here blocks day-to-day TSO /
+CICS use on the 3270 side, or basic IBM i signon + green-screen use on
+the 5250 side.
 
 - **Other EBCDIC code pages** (CP500, CP297, CP285, …) - straightforward
   to add (delta maps in `Ebcdic.js`); CP037 + CP1047 ship today
 - **DBCS / SO/SI** (Asian double-byte)
+- **5250 printer sessions** - only display devices for now
+- **5250 ENPTUI - full set** - Window / ScrollBar / Selection Field
+  primitives are decoded, but menu bars and the long tail of WDSF
+  minor structures aren't wired through yet
