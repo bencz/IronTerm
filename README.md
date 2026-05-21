@@ -98,6 +98,10 @@ bottom turns green.
 
 <img width="1512" height="865" alt="image" src="https://github.com/user-attachments/assets/ba2b32a0-356b-4d81-92c2-ffda4d34e249" />
 
+---
+
+<img width="1511" height="866" alt="image" src="https://github.com/user-attachments/assets/1f2cda9e-8d4c-4f36-b3c8-f75ae12c34c4" />
+
 
 ## What works
 
