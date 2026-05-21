@@ -66,7 +66,31 @@ Pick the model (3278-2 default), press **Connect**, and the OIA at the
 bottom turns green.
 
 # Screenshots
+
+## tn3270
+
 <img width="1920" height="966" alt="image" src="https://github.com/user-attachments/assets/f5d7d630-b739-4a8e-8a0e-f2e2e8c9944b" />
+
+---
+
+<img width="1512" height="863" alt="image" src="https://github.com/user-attachments/assets/f8589863-12e0-454e-91a8-f8cc3b22954b" />
+
+---
+
+<img width="1512" height="864" alt="image" src="https://github.com/user-attachments/assets/46ca4c96-560d-44f5-976c-05218657eed5" />
+
+## tn5250
+
+<img width="1512" height="865" alt="image" src="https://github.com/user-attachments/assets/e5a7b892-4df0-4f20-8ce3-f0362250a2cc" />
+
+---
+
+<img width="1512" height="868" alt="image" src="https://github.com/user-attachments/assets/92d890ff-6012-4d58-9897-6217dbc5312d" />
+
+---
+
+<img width="1512" height="865" alt="image" src="https://github.com/user-attachments/assets/ba2b32a0-356b-4d81-92c2-ffda4d34e249" />
+
 
 ## What works
 
