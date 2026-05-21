@@ -27,10 +27,17 @@ static server works; nothing in the project requires a build step.
 ### 2. Run a TCP↔WebSocket bridge
 
 [websockify](https://github.com/novnc/websockify) is the simplest
-option. To expose a Hercules MVS turnkey listening on `localhost:3270`:
+option. To expose a Hercules MVS turnkey listening on `localhost:3270`
+(for TN3270):
 
 ```sh
 websockify 0.0.0.0:6080 localhost:3270
+```
+
+Or to point the TN5250 client at the public IBM i at pub400.com:
+
+```sh
+websockify 0.0.0.0:6080 pub400.com:23
 ```
 
 For multi-target routing, websockify also supports a token file or you
