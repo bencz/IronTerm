@@ -1,6 +1,6 @@
 # IronTerm
 
-Browser-side IBM 3270 terminal. No backend, no server-side code, no
+Browser-side IBM 3270 terminal and IBM 5250 ( BETA ). No backend, no server-side code, no
 runtime build step - just static files served over HTTP. The 3270
 datastream and TN3270E telnet negotiation are implemented in plain
 JavaScript modules running in the page; the page connects to the
