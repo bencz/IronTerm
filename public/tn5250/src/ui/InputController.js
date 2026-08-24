@@ -6,7 +6,7 @@
 // navigation conventions: PageUp = Roll Down, PageDown = Roll Up,
 // Help = Ctrl+H, Print = Ctrl+P, Escape = Error Reset.
 
-import { Aid, aidFromName } from '../proto/Constants.js';
+import { Aid, aidFromName, ATTR_BASE } from '../proto/Constants.js';
 import { ConstructKind } from '../proto/enptui/Constants.js';
 import { Selection } from './Selection.js';
 
@@ -30,6 +30,7 @@ export class InputController {
         this.canvas = hooks.canvas;
         this.renderer = hooks.renderer;
         this.screen = hooks.screen;
+        this.pendingPointer = null;
 
         this.selection = new Selection({
             canvas:        hooks.canvas,
@@ -38,6 +39,8 @@ export class InputController {
             onType:        hooks.onType,
             onFlash:       hooks.onFlash,
             onClickCursor: (click) => this.#handleClick(click),
+            onPointerEvent: (click) => this.#handlePointerEvent(click),
+            hasPointerDefinitions: () => this.#pointerDefinitions().length > 0,
         });
 
         this.#bindKeyboard();
@@ -47,6 +50,106 @@ export class InputController {
         if (this.#tryEnptuiClick(click)) return;
         const addr = click.row * this.screen.cols + click.col;
         this.h.onMoveCursor?.(addr);
+    }
+
+    #pointerDefinitions () {
+        return this.screen.enptui?.all.find(
+            c => c.kind === ConstructKind.MOUSE_EVENTS)?.definitions ?? [];
+    }
+
+    #handlePointerEvent (click) {
+        // IBM routes selection-field and scrollbar cells through their
+        // construct handlers before consulting programmable mouse events.
+        if (this.#interactiveEnptuiAt(click.row + 1, click.col + 1)) return false;
+        const definitions = this.#pointerDefinitions();
+        if (definitions.length === 0) {
+            this.pendingPointer = null;
+            this.screen.pointerMarker = null;
+            return false;
+        }
+
+        if (this.pendingPointer) {
+            // Replacing the host's PMB definition invalidates a pending
+            // first event, even when the replacement uses the same event
+            // number. Definitions are immutable objects owned by the
+            // currently active construct, so identity is unambiguous.
+            if (!definitions.includes(this.pendingPointer.definition)) {
+                this.pendingPointer = null;
+                this.screen.pointerMarker = null;
+            }
+        }
+
+        if (this.pendingPointer) {
+            const pending = this.pendingPointer;
+            if (this.screen.keyboardLocked) return false;
+            if (pending.definition.secondEvent === click.pointerEvent) {
+                this.pendingPointer = null;
+                this.screen.pointerMarker = null;
+                this.#firePointerDefinition(pending.definition, click, true, pending.click);
+                return true;
+            }
+            return false;
+        }
+
+        const definition = definitions.find(d => d.firstEvent === click.pointerEvent);
+        if (!definition) return false;
+        if (this.screen.keyboardLocked) {
+            const singleEvent = (definition.flags & 0x80) === 0;
+            if (singleEvent && (definition.flags & 0x20) !== 0 && !this.screen.queuedPointerAid)
+                this.screen.queuedPointerAid = definition.aidCode;
+            return true;
+        }
+        if ((definition.flags & 0x80) !== 0 && definition.secondEvent) {
+            this.pendingPointer = { definition, click };
+            if ((definition.flags & 0x10) !== 0) {
+                this.screen.pointerMarker = { row: click.row, col: click.col };
+                this.renderer.draw();
+            }
+            return true;
+        }
+        this.#firePointerDefinition(definition, click, false);
+        return true;
+    }
+
+    #firePointerDefinition (definition, click, isDoubleEvent, originClick = click) {
+        if ((definition.flags & 0x40) !== 0) {
+            const addr = click.row * this.screen.cols + click.col;
+            this.h.onMoveCursor?.(addr);
+        }
+        if (!definition.aidCode) return;
+        if (isDoubleEvent) {
+            this.screen.pendingPointerAid = {
+                row: originClick.row + 1,
+                col: originClick.col + 1,
+                aid: definition.aidCode,
+            };
+            this.h.onAid?.(Aid.POINTER);
+        } else {
+            this.h.onAid?.(definition.aidCode);
+        }
+    }
+
+    #interactiveEnptuiAt (row1, col1) {
+        for (const c of this.screen.enptui?.all ?? []) {
+            if (c.kind === ConstructKind.SCROLL_BAR) {
+                const vertical = c.direction === 0;
+                const axis = vertical ? row1 : col1;
+                const offAxis = vertical ? col1 : row1;
+                const start = vertical ? c.rowOffset + 1 : c.colOffset + 2;
+                const end = vertical ? start + c.length - 1 : c.colOffset + c.length - 1;
+                const center = vertical ? c.colOffset + 2 : c.rowOffset + 1;
+                if (offAxis === center && axis >= start && axis <= end) return true;
+                continue;
+            }
+            if (!c.itemPositions) continue;
+            for (let i = 0; i < c.itemPositions.length; i++) {
+                if (c.items?.[i]?.nonCursorable) continue;
+                const pos = c.itemPositions[i];
+                const width = pos.hitWidth ?? pos.slotWidth ?? c.textSize ?? 1;
+                if (row1 === pos.row && col1 >= pos.col && col1 < pos.col + width) return true;
+            }
+        }
+        return false;
     }
 
     // ---- keyboard -----------------------------------------------------
@@ -118,6 +221,7 @@ export class InputController {
             const aid = this.#functionKeyName(event);
             if (aid) {
                 event.preventDefault();
+                if (aid === 'Enter' && this.#enterOnEnptuiItem()) return;
                 const code = aidFromName(aid);
                 if (code !== null) this.h.onAid?.(code);
                 return;
@@ -153,6 +257,8 @@ export class InputController {
                         return;
                     }
                 }
+                const enptuiHit = this.screen.enptuiItemAtCursor?.();
+                if (enptuiHit && this.#selectionCharacter(event.key, enptuiHit)) return;
                 this.h.onType?.(event.key);
             }
         });
@@ -203,6 +309,7 @@ export class InputController {
 
     #arrow (key) {
         const s = this.screen;
+        if (this.#navigateEnptui(key)) return;
         let addr = s.cursor;
         if (key === 'ArrowLeft')  addr = (addr - 1 + s.size) % s.size;
         if (key === 'ArrowRight') addr = (addr + 1) % s.size;
@@ -211,7 +318,7 @@ export class InputController {
 
         // ENPTUI window cursor restriction. If the cursor was inside a
         // window that was created with the "restricted cursor" flag
-        // (flag1 bit 0x80 clear in CreateWindow) AND the host hasn't
+        // (flag1 bit 0x80 in CreateWindow) AND the host hasn't
         // sent UNREST_WIN_CURSOR since, clamp the new position to the
         // window's interior, per the ENPTUI reference.
         const window = this.#enclosingRestrictedWindow(s.cursor);
@@ -220,6 +327,64 @@ export class InputController {
             if (target !== null) addr = target;
         }
         this.h.onMoveCursor?.(addr);
+    }
+
+    #navigateEnptui (key) {
+        const hit = this.screen.enptuiItemAtCursor?.();
+        if (!hit) return false;
+        const { construct, index } = hit;
+        const item = construct.items[index];
+        const scrollAid = key === 'ArrowLeft'  && item.leftChoice  ? Aid.ROLL_LEFT
+            : key === 'ArrowRight' && item.rightChoice ? Aid.ROLL_RIGHT
+            : key === 'ArrowUp'    && item.topChoice   ? Aid.ROLL_DOWN
+            : key === 'ArrowDown'  && item.bottomChoice ? Aid.ROLL_UP
+            : null;
+        if (scrollAid !== null) {
+            this.h.onAid?.(scrollAid);
+            return true;
+        }
+
+        const current = construct.itemPositions[index];
+        const candidates = construct.itemPositions
+            .map((pos, i) => ({ pos, i, item: construct.items[i] }))
+            .filter(entry => entry.pos && !entry.item.nonCursorable && entry.i !== index);
+        let eligible;
+        if (key === 'ArrowLeft' || key === 'ArrowRight') {
+            eligible = candidates.filter(entry => entry.pos.row === current.row
+                && (key === 'ArrowLeft' ? entry.pos.textCol < current.textCol
+                                        : entry.pos.textCol > current.textCol));
+            eligible.sort((a, b) => key === 'ArrowLeft'
+                ? b.pos.textCol - a.pos.textCol : a.pos.textCol - b.pos.textCol);
+        } else {
+            eligible = candidates.filter(entry => key === 'ArrowUp'
+                ? entry.pos.row < current.row : entry.pos.row > current.row);
+            eligible.sort((a, b) => {
+                const rowA = Math.abs(a.pos.row - current.row);
+                const rowB = Math.abs(b.pos.row - current.row);
+                return rowA - rowB
+                    || Math.abs(a.pos.textCol - current.textCol)
+                     - Math.abs(b.pos.textCol - current.textCol);
+            });
+        }
+
+        let target = eligible[0];
+        if (!target && !construct.cursorExitable && candidates.length) {
+            const all = construct.itemPositions
+                .map((pos, i) => ({ pos, i, item: construct.items[i] }))
+                .filter(entry => entry.pos && !entry.item.nonCursorable);
+            target = (key === 'ArrowLeft' || key === 'ArrowUp') ? all.at(-1) : all[0];
+        }
+        if (target) {
+            this.h.onMoveCursor?.(target.pos.textIdx);
+            return true;
+        }
+
+        const pullDown = [0x31, 0x32, 0x51].includes(construct.subType);
+        if (pullDown && construct.cancelAID) {
+            this.h.onAid?.(construct.cancelAID);
+            return true;
+        }
+        return false;
     }
 
     /** Find the most-recently-defined restricted ENPTUI window that
@@ -233,8 +398,8 @@ export class InputController {
         for (const w of s.enptui.all) {
             if (w.kind !== ConstructKind.WINDOW) continue;
             if (!w.cursorRestricted) continue;
-            if (r >= w.topRow && r < w.topRow + w.height
-             && c >= w.leftCol && c < w.leftCol + w.width) return w;
+            if (r >= w.innerTopRow && r < w.innerTopRow + w.innerHeight
+             && c >= w.innerLeftCol && c < w.innerLeftCol + w.innerWidth) return w;
         }
         return null;
     }
@@ -245,8 +410,8 @@ export class InputController {
         const s = this.screen;
         const r = (addr / s.cols | 0) + 1;
         const c = (addr % s.cols) + 1;
-        const top = w.topRow,    bot   = w.topRow  + w.height - 1;
-        const left = w.leftCol,  right = w.leftCol + w.width  - 1;
+        const top = w.innerTopRow,    bot   = w.innerTopRow  + w.innerHeight - 1;
+        const left = w.innerLeftCol,  right = w.innerLeftCol + w.innerWidth  - 1;
         if (r >= top && r <= bot && c >= left && c <= right) return null;
         const rr = Math.max(top, Math.min(bot, r));
         const cc = Math.max(left, Math.min(right, c));
@@ -256,7 +421,7 @@ export class InputController {
     // ---- ENPTUI click handling ----------------------------------------
 
     /** ENPTUI: handle a click that may have landed on a radio button,
-     *  checkbox, push button, mouse region or scroll bar. Returns true
+     *  checkbox, push button or scroll bar. Returns true
      *  when the click was consumed (so the caller should NOT also move
      *  the cursor). */
     #tryEnptuiClick (click) {
@@ -266,14 +431,6 @@ export class InputController {
         const col1 = click.col + 1;
 
         for (const c of s.enptui.all) {
-            if (c.kind === ConstructKind.MOUSE_REGION) {
-                if (row1 >= c.row && row1 < c.row + c.rows
-                 && col1 >= c.col && col1 < c.col + c.cols) {
-                    if (c.aidCode) this.h.onAid?.(c.aidCode);
-                    return true;
-                }
-                continue;
-            }
             if (c.kind === ConstructKind.SCROLL_BAR) {
                 if (this.#tryScrollBarClick(c, row1, col1)) return true;
                 continue;
@@ -282,17 +439,66 @@ export class InputController {
                 && c.kind !== ConstructKind.PUSH_BUTTONS
                 && c.kind !== ConstructKind.MENU_BAR) continue;
             for (let i = 0; i < c.items.length; i++) {
+                if (c.items[i].nonCursorable) continue;
                 const pos = c.itemPositions?.[i];
                 if (!pos) continue;
                 const startCol = pos.col;
-                const endCol   = pos.col + (c.itemSlotWidth ?? c.textSize ?? 1) - 1;
+                const endCol   = pos.col + (pos.hitWidth ?? pos.slotWidth ?? c.textSize ?? 1) - 1;
                 if (row1 !== pos.row) continue;
                 if (col1 < startCol || col1 > endCol) continue;
+                if (s.keyboardLocked) return true;
+                if (c.pointerMayMoveCursor) this.h.onMoveCursor?.(pos.textIdx);
                 this.#activateEnptuiItem(c, i);
                 return true;
             }
         }
         return false;
+    }
+
+    #selectionCharacter (ch, hit) {
+        const { construct } = hit;
+        const byte = this.screen.ebcdic.fromCharCode(ch.codePointAt(0));
+        if (ch === '/' || (construct.selectChar && byte === construct.selectChar)) {
+            this.#selectEnptuiItem(construct, hit.index);
+            return true;
+        }
+
+        const target = ch.toLowerCase();
+        const mnemonicIndex = construct.items.findIndex(item => {
+            if (item.unavailable || item.mnemonicOffset < 0) return false;
+            const mnemonicByte = item.textBytes?.[item.mnemonicOffset];
+            return mnemonicByte !== undefined
+                && this.screen.ebcdic.toChar(mnemonicByte)?.toLowerCase() === target;
+        });
+        if (mnemonicIndex >= 0) {
+            const pos = construct.itemPositions[mnemonicIndex];
+            if (pos) this.h.onMoveCursor?.(pos.textIdx);
+            this.#selectEnptuiItem(construct, mnemonicIndex);
+            return true;
+        }
+
+        // A selection pseudo-field owns character input while focused;
+        // unmatched text must not leak into an underlying 5250 field.
+        this.h.onFlash?.('invalid selection key');
+        return true;
+    }
+
+    #selectEnptuiItem (construct, idx) {
+        if (this.screen.keyboardLocked) return;
+        const item = construct.items[idx];
+        if (!item || item.unavailable || item.nonCursorable) return;
+        if (!construct.multi) {
+            for (let i = 0; i < construct.items.length; i++) {
+                construct.items[i].selected = false;
+                this.#repaintItem(construct, i);
+            }
+        }
+        item.selected = true;
+        construct.modified = true;
+        this.#repaintItem(construct, idx);
+        this.renderer.draw();
+        if (construct.autoEnterOnSelect)
+            this.h.onAid?.(item.aidCode || Aid.ENTER);
     }
 
     /** Hit-test a click against the scroll bar's interactive zones and
@@ -309,20 +515,23 @@ export class InputController {
      *  slider position. */
     #tryScrollBarClick (sb, row1, col1) {
         const vertical = sb.direction === 0;
-        const start    = vertical ? sb.rowOffset + 1 : sb.colOffset + 1;
-        const end      = start + sb.length - 1;
+        const start    = vertical ? sb.rowOffset + 1 : sb.colOffset + 2;
+        const end      = vertical ? start + sb.length - 1 : sb.colOffset + sb.length - 1;
         const axis     = vertical ? row1 : col1;
         const offAxis  = vertical ? col1 : row1;
-        const onAxis   = vertical ? sb.colOffset + 1 : sb.rowOffset + 1;
+        const onAxis   = vertical ? sb.colOffset + 2 : sb.rowOffset + 1;
         if (offAxis !== onAxis) return false;
         if (axis < start || axis > end) return false;
+        if (this.screen.keyboardLocked) return true;
 
         // Map axis position to one of: top arrow, bottom arrow, shaft
         // above thumb, shaft below thumb, thumb. Thumb covers a span
         // proportional to visibleRows/totalRows of the bar's length.
-        const thumbLen  = Math.max(1, Math.floor(sb.length * (sb.visibleRows / Math.max(sb.totalRows, 1))));
-        const thumbPos  = Math.floor((sb.sliderPos / Math.max(sb.totalRows, 1)) * sb.length);
-        const thumbStart = start + 1 + thumbPos;        // +1 to skip the top arrow
+        const thumbLen  = sb.sliderCellSize
+            ?? Math.max(1, Math.floor(sb.length * (sb.visibleRows / Math.max(sb.totalRows, 1))));
+        const thumbPos  = sb.sliderCellPos
+            ?? Math.floor((sb.sliderPos / Math.max(sb.totalRows, 1)) * sb.length);
+        const thumbStart = (vertical ? sb.rowOffset + 1 : sb.colOffset + 1) + thumbPos;
         const thumbEnd   = thumbStart + thumbLen - 1;
         let aid;
         if (axis === start)                     aid = vertical ? Aid.ROLL_DOWN  : Aid.ROLL_LEFT;
@@ -330,16 +539,20 @@ export class InputController {
         else if (axis < thumbStart)             aid = vertical ? Aid.ROLL_DOWN  : Aid.ROLL_LEFT;
         else if (axis > thumbEnd)               aid = vertical ? Aid.ROLL_UP    : Aid.ROLL_RIGHT;
         else                                    aid = null;   // thumb click - host will refresh after drag
-        if (aid !== null) this.h.onAid?.(aid);
+        if (aid !== null) {
+            const page = axis !== start && axis !== end;
+            sb.scrollIncrement = page ? Math.max(1, sb.visibleRows) : 1;
+            sb.modified = true;
+            if (sb.parent) sb.parent.modified = true;
+            this.h.onAid?.(aid);
+        }
         return true;
     }
 
     /** Look for an ENPTUI item whose mnemonic letter matches the typed
-     *  character (case-insensitive). For radio/checkbox lists the
-     *  cursor jumps to the item and toggles it; for push-buttons /
-     *  menu bars the item's AID is fired directly. Returns true when
-     *  a match was found. */
+     *  character (case-insensitive), move focus to it and select it. */
     #tryMnemonic (ch) {
+        if (this.screen.keyboardLocked) return false;
         const target = ch.toLowerCase();
         const s = this.screen;
         for (const c of s.enptui.all) {
@@ -355,75 +568,97 @@ export class InputController {
                 const ch = s.ebcdic.toChar(byte);
                 if (!ch) continue;
                 if (ch.toLowerCase() !== target) continue;
-                this.#activateEnptuiItem(c, i);
+                const pos = c.itemPositions?.[i];
+                if (pos) this.h.onMoveCursor?.(pos.textIdx);
+                this.#selectEnptuiItem(c, i);
                 return true;
             }
         }
         return false;
     }
 
-    #activateEnptuiItem (construct, idx) {
-        const item = construct.items[idx];
-        if (!item || item.unavailable) return;
+    #enterOnEnptuiItem () {
+        const hit = this.screen.enptuiItemAtCursor?.();
+        if (!hit) return false;
+        if (this.screen.keyboardLocked) return true;
+        const { construct, index } = hit;
+        const item = construct.items[index];
+        if (!item || item.unavailable || item.nonCursorable) return true;
 
-        // Push buttons: clicking sends an AID immediately (the host
-        // delivered the AID code in the item's flag bytes when it
-        // defined the field; default to ENTER if absent).
-        if (construct.kind === ConstructKind.PUSH_BUTTONS) {
-            const aid = item.aidCode || Aid.ENTER;
-            this.h.onAid?.(aid);
-            return;
-        }
-
-        // Menu bar items: a bar click is an AID submission
-        // that lets the host repaint with a SINGLE_SEL_PULL or
-        // PUSH_BUTTON_PULL submenu anchored below the clicked bar item.
-        // Move the cursor onto the item first so the host knows which
-        // bar entry was activated, then send the item's AID (or Enter).
-        if (construct.kind === ConstructKind.MENU_BAR) {
-            const pos = construct.itemPositions[idx];
-            if (pos) {
-                const idxBuf = (pos.row - 1) * this.screen.cols + (pos.col - 1);
-                this.h.onMoveCursor?.(idxBuf);
+        // Enter optionally auto-selects the focused choice, then submits
+        // that choice's own AID only when it is selected. This is distinct
+        // from Space/pointer activation, which toggles the choice first.
+        if (construct.autoSelect && !item.selected) {
+            if (!construct.multi && construct.kind !== ConstructKind.PUSH_BUTTONS) {
+                for (let i = 0; i < construct.items.length; i++) {
+                    construct.items[i].selected = false;
+                    this.#repaintItem(construct, i);
+                }
             }
-            const aid = item.aidCode || Aid.ENTER;
-            this.h.onAid?.(aid);
-            return;
-        }
-
-        // Single-select (radio): clear other items in the same group,
-        // mark this one selected.
-        if (construct.single) {
-            for (const other of construct.items) other.selected = false;
             item.selected = true;
-        } else {
-            // Multi-select (checkbox): toggle.
-            item.selected = !item.selected;
+            construct.modified = true;
+            this.#repaintItem(construct, index);
+            this.renderer.draw();
         }
+        this.h.onAid?.(item.selected && item.aidCode ? item.aidCode : Aid.ENTER);
+        return true;
+    }
+
+    #activateEnptuiItem (construct, idx) {
+        if (this.screen.keyboardLocked) return;
+        const item = construct.items[idx];
+        if (!item || item.unavailable || item.nonCursorable) return;
+
+        // IBM's pointer path is the Space-key path: ordinary single-choice
+        // fields/menu bars deselect their peers and toggle the target;
+        // push buttons toggle without clearing their peers. Multi-choice
+        // fields independently toggle each item.
+        if (!construct.multi && construct.kind !== ConstructKind.PUSH_BUTTONS) {
+            for (let i = 0; i < construct.items.length; i++) {
+                construct.items[i].selected = false;
+                this.#repaintItem(construct, i);
+            }
+        }
+        item.selected = !item.selected;
+        construct.modified = true;
         // Repaint immediately so the user sees the change before
         // submitting the AID; the indicator overlay reads from
         // construct.items so no further state update is needed.
         this.#repaintItem(construct, idx);
         this.renderer.draw();
+        if ((item.selected && construct.autoEnterOnSelect)
+            || (!item.selected && construct.autoEnterOnDeselect))
+            this.h.onAid?.(item.aidCode || Aid.ENTER);
     }
 
     /** Update the indicator cell to reflect the new selected state.
      *  Without this, the underlying EBCDIC byte that was painted at
      *  decode time stays at '.', '/', etc. */
     #repaintItem (construct, idx) {
-        if (!construct.drawIndicator) return;
         const pos = construct.itemPositions[idx];
         if (!pos) return;
         const s = this.screen;
-        const cellIdx = (pos.row - 1) * s.cols + (pos.col - 1);
+        const item = construct.items[idx];
+        if (!item || item.dummy) return;
+        const attrIndex = item.unavailable ? 5 : item.selected ? 4 : 3;
+        const attrByte = construct.choiceAttrs[attrIndex];
+        const attrCell = s.cells[pos.anchorIdx];
+        if (attrCell) {
+            attrCell.byte = attrByte;
+            attrCell.glyph = ' ';
+            attrCell.attributePlace = true;
+            attrCell.attr = ATTR_BASE[attrByte] ?? s.activeAttr;
+        }
+        if (!construct.drawIndicator || item.unavailable) return;
+        const cellIdx = pos.indicatorIdx;
         const cell = s.cells[cellIdx];
         if (!cell) return;
         // Sync the on-screen EBCDIC indicator with the new state so
         // submit time (when the host reads the screen) sees it.
         if (construct.single) {
-            cell.byte = construct.items[idx].selected ? 0x4B /* . */ : 0x40 /* sp */;
+            cell.byte = item.selected ? 0x61 /* / */ : 0x4B /* . */;
         } else {
-            cell.byte = construct.items[idx].selected ? 0x61 /* / */ : 0x40 /* sp */;
+            cell.byte = item.selected ? 0x61 /* / */ : 0x40 /* sp */;
         }
         cell.glyph = s.ebcdic.toChar(cell.byte);
     }

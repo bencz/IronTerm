@@ -13,6 +13,8 @@ export class Selection {
      * @param {import('./Renderer.js').Renderer} hooks.renderer
      * @param {import('../display/ScreenBuffer.js').ScreenBuffer} hooks.screen
      * @param {(click:{row:number,col:number})=>void} hooks.onClickCursor
+     * @param {(click:{row:number,col:number,pointerEvent:number})=>boolean} [hooks.onPointerEvent]
+     * @param {()=>boolean} [hooks.hasPointerDefinitions]
      * @param {(text:string)=>void} hooks.onType
      * @param {(text:string)=>void} hooks.onFlash
      */
@@ -77,8 +79,13 @@ export class Selection {
 
     #bindMouse () {
         this.canvas.addEventListener('mousedown', (event) => {
+            const click = this.#pointerAtMouse(event, 'down');
+            if (this.h.onPointerEvent?.(click)) {
+                event.preventDefault();
+                return;
+            }
             if (event.button !== 0) return;
-            this.dragOrigin = this.#cellAtMouse(event);
+            this.dragOrigin = click;
             this.dragMoved = false;
             this.selection = this.#norm(this.dragOrigin, this.dragOrigin);
             this.renderer.setSelection?.(this.selection);
@@ -91,17 +98,38 @@ export class Selection {
             this.selection = this.#norm(this.dragOrigin, cell);
             this.renderer.setSelection?.(this.selection);
         });
-        document.addEventListener('mouseup', () => {
+        document.addEventListener('mouseup', (event) => {
+            const pointerConsumed = this.h.onPointerEvent?.(this.#pointerAtMouse(event, 'up')) ?? false;
             if (!this.dragOrigin) return;
             const wasDrag = this.dragMoved;
             const click = this.dragOrigin;
             this.dragOrigin = null;
-            if (!wasDrag) {
+            if (!wasDrag && !pointerConsumed) {
                 this.selection = null;
                 this.renderer.setSelection?.(null);
                 this.h.onClickCursor?.(click);
+            } else if (pointerConsumed) {
+                this.selection = null;
+                this.renderer.setSelection?.(null);
             }
         });
+        this.canvas.addEventListener('dblclick', (event) => {
+            if (this.h.onPointerEvent?.(this.#pointerAtMouse(event, 'double')))
+                event.preventDefault();
+        });
+        this.canvas.addEventListener('contextmenu', (event) => {
+            if (this.h.hasPointerDefinitions?.()) event.preventDefault();
+        });
+    }
+
+    #pointerAtMouse (event, phase) {
+        const click = this.#cellAtMouse(event);
+        const buttonBase = event.button === 2 ? 4 : event.button === 1 ? 7 : 1;
+        const phaseOffset = phase === 'double' ? 2 : phase === 'up' ? 1 : 0;
+        return {
+            ...click,
+            pointerEvent: buttonBase + phaseOffset + (event.shiftKey ? 9 : 0),
+        };
     }
 
     #cellAtMouse (event) {

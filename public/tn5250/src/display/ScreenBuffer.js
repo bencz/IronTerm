@@ -101,6 +101,9 @@ export class ScreenBuffer {
         this.alarm = false;
         this.insertMode = false;
         this.autoEnterRequested = false;
+        this.pendingPointerAid = null;
+        this.queuedPointerAid = null;
+        this.pointerMarker = null;
 
         // SAVE/RESTORE slot. It includes ENPTUI and operator state, not
         // just cells: System Request temporarily replaces the whole panel.
@@ -161,6 +164,9 @@ export class ScreenBuffer {
         this.alarm = false;
         this.insertMode = false;
         this.autoEnterRequested = false;
+        this.pendingPointerAid = null;
+        this.queuedPointerAid = null;
+        this.pointerMarker = null;
         this.savedScreen = null;
         this.pendingCursor = -1;
         this.activeAttr = DEFAULT_ATTR_DESC;
@@ -182,6 +188,9 @@ export class ScreenBuffer {
         this.alarm = false;
         this.insertMode = false;
         this.autoEnterRequested = false;
+        this.pendingPointerAid = null;
+        this.queuedPointerAid = null;
+        this.pointerMarker = null;
         this.pendingCursor = -1;
         this.sysreqMode = false;
         this.errorMode = false;
@@ -203,6 +212,38 @@ export class ScreenBuffer {
         c0.glyph = ' ';
     }
     clearFormatTable () { this.fields = []; this.recalcAttributes(); }
+
+    /** Apply a host keyboard-unlock transition and its ENPTUI side
+     *  effect. Selection flag3 bit 0x80 asks the terminal to clear every
+     *  cursorable choice whenever the host unlocks input. */
+    unlockKeyboard () {
+        this.keyboardLocked = false;
+        for (const construct of this.enptui.all) {
+            if (!construct.deselectOnUnlock || !construct.items) continue;
+            for (let i = 0; i < construct.items.length; i++) {
+                const item = construct.items[i];
+                if (item.nonCursorable) continue;
+                item.selected = false;
+                const position = construct.itemPositions?.[i];
+                const anchorIdx = position?.anchorIdx;
+                if (Number.isInteger(anchorIdx) && anchorIdx >= 0) {
+                    const byte = construct.choiceAttrs?.[3] ?? 0x20;
+                    const cell = this.cells[anchorIdx];
+                    cell.byte = byte;
+                    cell.glyph = ' ';
+                    cell.attributePlace = true;
+                    cell.attr = ATTR_BASE[byte] ?? this.activeAttr;
+                }
+                const indicatorIdx = position?.indicatorIdx;
+                if (Number.isInteger(indicatorIdx) && indicatorIdx >= 0) {
+                    const byte = construct.single ? 0x4B : 0x40;
+                    this.cells[indicatorIdx].byte = byte;
+                    this.cells[indicatorIdx].glyph = this.ebcdic.toChar(byte);
+                }
+            }
+        }
+    }
+
     saveScreen () {
         this.savedScreen = {
             cells: this.cells.map(c => ({ ...c })),
@@ -444,6 +485,7 @@ export class ScreenBuffer {
 
     resetMdtFlags () {
         for (const f of this.fields) f.modified = false;
+        for (const construct of this.enptui.all) construct.modified = false;
     }
 
     nullModifiedFields () {
@@ -679,14 +721,11 @@ export class ScreenBuffer {
         }
         for (const c of this.enptui.all) {
             if (!c.itemPositions) continue;
-            // Push buttons and items without an indicator land flush
-            // left; selection items land just past the "indicator + 1
-            // space" prefix written by SelectionField.js.
-            const offset = (c.kind === 'pushButtons' || !c.drawIndicator) ? 0 : 2;
-            for (const pos of c.itemPositions) {
-                const r = pos.row - 1;
-                const cIdx = pos.col - 1 + offset;
-                stops.push(r * this.cols + cIdx);
+            for (let i = 0; i < c.itemPositions.length; i++) {
+                if (c.items?.[i]?.nonCursorable) continue;
+                if (!c.fieldAdvance && i > 0) continue;
+                const pos = c.itemPositions[i];
+                if (Number.isInteger(pos.textIdx)) stops.push(pos.textIdx);
             }
         }
         return stops.sort((a, b) => a - b);
@@ -703,13 +742,12 @@ export class ScreenBuffer {
             if (construct.kind !== 'selectionField'
                 && construct.kind !== 'pushButtons'
                 && construct.kind !== 'menuBar') continue;
-            const slotW = construct.itemSlotWidth
-                ?? construct.textSize
-                ?? 1;
             for (let i = 0; i < construct.itemPositions.length; i++) {
                 const pos = construct.itemPositions[i];
+                if (construct.items?.[i]?.nonCursorable) continue;
                 if (pos.row !== r) continue;
-                if (c < pos.col || c >= pos.col + slotW) continue;
+                const width = pos.hitWidth ?? pos.slotWidth ?? construct.textSize ?? 1;
+                if (c < pos.col || c >= pos.col + width) continue;
                 return { construct, index: i };
             }
         }

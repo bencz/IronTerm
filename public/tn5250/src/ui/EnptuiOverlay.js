@@ -34,10 +34,28 @@ export class EnptuiOverlay {
                 case ConstructKind.PUSH_BUTTONS:     this.#drawPushButtons(ctx, c); break;
                 case ConstructKind.SCROLL_BAR:       this.#drawScrollBar(ctx, c); break;
                 case ConstructKind.GRID:             this.#drawGrid(ctx, c); break;
-                // Mouse regions are invisible by design - the input
-                // controller fires AIDs when the user clicks inside them.
+                // Programmable mouse definitions are global and have no
+                // persistent visual of their own.
             }
         }
+        this.#drawPointerMarker(ctx);
+    }
+
+    #drawPointerMarker (ctx) {
+        const marker = this.screen.pointerMarker;
+        if (!marker) return;
+        const { cellWidth, cellHeight } = this.g;
+        const startCol = Math.max(0, marker.col - 1);
+        const widthCells = Math.min(3, this.screen.cols - startCol);
+        ctx.save();
+        ctx.strokeStyle = COLOR.turquoise;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(
+            startCol * cellWidth + 0.5,
+            marker.row * cellHeight + 0.5,
+            widthCells * cellWidth - 1,
+            cellHeight - 1);
+        ctx.restore();
     }
 
     /** Draw the grid separator lines from a host-defined construct.
@@ -85,16 +103,6 @@ export class EnptuiOverlay {
             const frameColor = borderDesc ? (COLOR[borderDesc.fg] ?? COLOR.turquoise)
                                            : COLOR.turquoise;
             ctx.strokeStyle = frameColor;
-            // Line style decoded from the Border minor's byte 5:
-            //   0=solid, 1=bold, 2=double, 3=dotted, 8=dashed,
-            //   9=bold dashed, 10=double dashed
-            switch (w.lineStyle) {
-                case 1:  ctx.lineWidth = 2; break;
-                case 3:  ctx.setLineDash([2, 2]); break;
-                case 8:  ctx.setLineDash([5, 3]); break;
-                case 9:  ctx.lineWidth = 2; ctx.setLineDash([5, 3]); break;
-                case 10: ctx.setLineDash([5, 3]); break;
-            }
             // Menu-pull-down windows omit the top border so the visual
             // glues to the originating menu-bar row.
             if (w.menuPullDown) {
@@ -106,9 +114,6 @@ export class EnptuiOverlay {
                 ctx.stroke();
             } else {
                 ctx.strokeRect(x + 0.5, y + 0.5, wpx - 1, hpx - 1);
-                if (w.lineStyle === 2 || w.lineStyle === 10) {
-                    ctx.strokeRect(x + 2.5, y + 2.5, wpx - 5, hpx - 5);
-                }
             }
             ctx.setLineDash([]);
         }
@@ -175,10 +180,10 @@ export class EnptuiOverlay {
         for (let i = 0; i < sel.items.length; i++) {
             const item = sel.items[i];
             const pos  = sel.itemPositions[i];
-            if (!pos) continue;
+            if (!pos || item.dummy) continue;
 
-            const r0 = pos.row - 1;
-            const c0 = pos.col - 1;
+            const r0 = ((pos.indicatorIdx / s.cols) | 0);
+            const c0 = pos.indicatorIdx % s.cols;
             const cellX = c0 * cellWidth;
             const cellY = r0 * cellHeight;
             const isFocused = (i === focusedIdx);
@@ -198,26 +203,31 @@ export class EnptuiOverlay {
             const indDesc = ATTR_BASE[indAttrByte] ?? sel.items[0]?.indDesc;
             const itemDesc = ATTR_BASE[attrByte];
 
-            // Clear the indicator cell so the underlying EBCDIC '.'
-            // or '/' doesn't show through underneath our glyph.
-            ctx.fillStyle = '#000';
-            ctx.fillRect(cellX, cellY, cellWidth, cellHeight);
+            // IBM suppresses the indicator for an unavailable choice,
+            // but still renders its label with the unavailable palette.
+            if (!item.unavailable) {
+                // Clear the raw EBCDIC marker before drawing the Unicode
+                // radio/checkbox glyph over the same cell.
+                ctx.fillStyle = '#000';
+                ctx.fillRect(cellX, cellY, cellWidth, cellHeight);
 
-            const marker = sel.single
-                ? (item.selected ? '●' : '○')
-                : (item.selected ? '☑' : '☐');
+                const marker = sel.single
+                    ? (item.selected ? '●' : '○')
+                    : (item.selected ? '☑' : '☐');
 
-            ctx.fillStyle = indDesc ? (COLOR[indDesc.fg] ?? COLOR.green) : COLOR.green;
-            ctx.fillText(marker, cellX + cellWidth / 2, cellY + cellHeight / 2);
+                ctx.fillStyle = indDesc ? (COLOR[indDesc.fg] ?? COLOR.green) : COLOR.green;
+                ctx.fillText(marker, cellX + cellWidth / 2, cellY + cellHeight / 2);
+            }
 
             // Repaint the label cells with the resolved per-state
             // attribute. We re-render the EBCDIC bytes (already in the
             // screen buffer) using the chosen fg/bg, then drop the
             // mnemonic underline on top.
             if (itemDesc) {
-                const textCol = c0 + 2;
+                const textCol = pos.textCol - 1;
                 const textX = textCol * cellWidth;
-                const textW = (sel.textSize ?? 0) * cellWidth;
+                const textLength = pos.textLength ?? sel.textSize ?? 0;
+                const textW = textLength * cellWidth;
                 const fg = itemDesc.reverse ? (COLOR[itemDesc.bg] ?? COLOR.black)
                                             : (COLOR[itemDesc.fg] ?? COLOR.green);
                 const bg = itemDesc.reverse ? (COLOR[itemDesc.fg] ?? COLOR.green)
@@ -226,8 +236,8 @@ export class EnptuiOverlay {
                 ctx.fillRect(textX, cellY, textW, cellHeight);
                 ctx.fillStyle = fg;
                 ctx.textAlign = 'left';
-                for (let k = 0; k < (sel.textSize ?? 0); k++) {
-                    const cIdx = (pos.row - 1) * s.cols + textCol + k;
+                for (let k = 0; k < textLength; k++) {
+                    const cIdx = pos.textIdx + k;
                     const cell = s.cells[cIdx];
                     if (!cell) break;
                     ctx.fillText(cell.glyph || ' ',
@@ -237,7 +247,7 @@ export class EnptuiOverlay {
                 // Mnemonic underline: highlight the host-designated
                 // shortcut character so the user knows which keystroke
                 // jumps directly to this item.
-                if (item.mnemonicOffset >= 0 && item.mnemonicOffset < (sel.textSize ?? 0)) {
+                if (item.mnemonicOffset >= 0 && item.mnemonicOffset < textLength) {
                     ctx.fillStyle = fg;
                     ctx.fillRect(
                         textX + item.mnemonicOffset * cellWidth,
@@ -255,25 +265,22 @@ export class EnptuiOverlay {
     }
 
     #drawMenuBar (ctx, mb) {
-        const s = this.screen;
         if (!mb.items?.length) return;
         const { cellWidth, cellHeight } = this.g;
-        const x = (mb.col - 1) * cellWidth;
         const y = (mb.row - 1) * cellHeight;
-        const wpx = s.cols * cellWidth - x;
 
         ctx.save();
-        // Reverse-video bar background.
-        ctx.fillStyle = 'rgba(80, 145, 255, 0.18)';
-        ctx.fillRect(x, y, wpx, cellHeight);
-
-        // Underline beneath the bar.
-        ctx.strokeStyle = COLOR.turquoise;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(x, y + cellHeight - 1);
-        ctx.lineTo(x + wpx, y + cellHeight - 1);
-        ctx.stroke();
+        const separator = mb.menuSeparator;
+        if (separator) {
+            const desc = ATTR_BASE[separator.attr];
+            ctx.strokeStyle = desc ? (COLOR[desc.fg] ?? COLOR.turquoise) : COLOR.turquoise;
+            ctx.lineWidth = 1;
+            const lineY = y + (mb.menuRows ?? 1) * cellHeight - 0.5;
+            ctx.beginPath();
+            ctx.moveTo((separator.startCol - 1) * cellWidth, lineY);
+            ctx.lineTo(separator.endCol * cellWidth, lineY);
+            ctx.stroke();
+        }
         ctx.restore();
     }
 
@@ -298,7 +305,7 @@ export class EnptuiOverlay {
         for (let i = 0; i < pb.items.length; i++) {
             const item = pb.items[i];
             const pos  = pb.itemPositions[i];
-            if (!pos) continue;
+            if (!pos || item.dummy) continue;
             if ((item.flag2 & 0x04) !== 0) continue;     // NoPushBox flag
 
             const isFocused = (i === focusedIdx);
@@ -307,7 +314,8 @@ export class EnptuiOverlay {
             const c = pos.col - 1;
             const x = c * cellWidth;
             const y = r * cellHeight;
-            const wpx = pb.textSize * cellWidth;
+            const textLength = pos.textLength ?? pb.textSize;
+            const wpx = textLength * cellWidth;
             const hpx = cellHeight;
 
             // Pick frame colour from the host-supplied palette.
@@ -330,8 +338,8 @@ export class EnptuiOverlay {
                 ctx.font = `${fontSize}px ${TERMINAL_FONT}`;
                 ctx.textBaseline = 'middle';
                 ctx.textAlign = 'left';
-                for (let k = 0; k < pb.textSize; k++) {
-                    const cIdx = r * s.cols + c + k;
+                for (let k = 0; k < textLength; k++) {
+                    const cIdx = pos.textIdx + k;
                     const cell = s.cells[cIdx];
                     if (!cell) break;
                     ctx.fillText(cell.glyph || ' ',
@@ -364,24 +372,19 @@ export class EnptuiOverlay {
         if (sb.direction === 0) {
             // Vertical
             const length = sb.length * ch;
-            ctx.fillRect(x, y, cw, length);
-            ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, length - 1);
-            // Thumb proportional to visible/total.
-            const total = Math.max(sb.totalRows, 1);
-            const visible = Math.max(sb.visibleRows, 1);
-            const thumbH = Math.max(ch, (visible / total) * length);
-            const thumbY = y + (sb.sliderPos / total) * length;
+            ctx.fillRect(x, y, 3 * cw, length);
+            ctx.strokeRect(x + cw + 0.5, y + 0.5, cw - 1, length - 1);
+            const thumbH = Math.max(ch, (sb.sliderCellSize ?? 1) * ch);
+            const thumbY = y + (sb.sliderCellPos ?? 1) * ch;
             ctx.fillStyle = COLOR.turquoise;
-            ctx.fillRect(x + 2, thumbY + 2, cw - 4, thumbH - 4);
+            ctx.fillRect(x + cw + 2, thumbY + 2, cw - 4, Math.max(1, thumbH - 4));
         } else {
             // Horizontal
             const length = sb.length * cw;
             ctx.fillRect(x, y, length, ch);
             ctx.strokeRect(x + 0.5, y + 0.5, length - 1, ch - 1);
-            const total = Math.max(sb.totalRows, 1);
-            const visible = Math.max(sb.visibleRows, 1);
-            const thumbW = Math.max(cw, (visible / total) * length);
-            const thumbX = x + (sb.sliderPos / total) * length;
+            const thumbW = Math.max(cw, (sb.sliderCellSize ?? 1) * cw);
+            const thumbX = x + (sb.sliderCellPos ?? 1) * cw;
             ctx.fillStyle = COLOR.turquoise;
             ctx.fillRect(thumbX + 2, y + 2, thumbW - 4, ch - 4);
         }

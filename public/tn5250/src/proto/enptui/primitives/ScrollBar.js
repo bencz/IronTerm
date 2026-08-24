@@ -7,13 +7,10 @@
 // Wire layout:
 //
 //   +0  flag1
-//   +1  direction   (0 = vertical, 1 = horizontal)
-//   +2  rowOffset
-//   +3  colOffset
-//   +4  length      (track length in cells)
-//   +5..+8  totalRows (32-bit, big-endian)
-//   +9..+12 visibleRows (32-bit)
-//   +13..+16 sliderPos  (32-bit, top of slider)
+//   +1  reserved
+//   +2..+5  total rows/columns (32-bit, big-endian)
+//   +6..+9  rows/columns available before the slider (32-bit)
+//   +10 bar size in screen cells
 //   ...etc.
 //
 // Reference: ENPTUI scroll-bar construct definition.
@@ -22,37 +19,83 @@
 // zones to the corresponding Roll AIDs. Direct thumb dragging is not an
 // advertised capability.
 
-import { ConstructKind } from '../Constants.js';
+import { ConstructKind, SenseCode } from '../Constants.js';
+import { enptuiFail as fail } from '../DataStreamError.js';
+
+export function scrollBarMetrics (length, totalRows, sliderPos, vertical) {
+    let actualSize = length;
+    if (vertical) {
+        if (length > 4) actualSize -= 2;
+    } else if (length < 7) {
+        actualSize -= 2;
+    } else {
+        actualSize -= 4;
+    }
+    actualSize = Math.max(1, actualSize);
+    let sliderCellSize = Math.floor(((length - (vertical ? 0 : 2)) * actualSize) / totalRows);
+    if (sliderCellSize === 0) sliderCellSize = 1;
+    let sliderCellPos = sliderPos === 0 ? 0 : Math.max(1, Math.floor((sliderPos * actualSize) / totalRows));
+    sliderCellPos++;
+    if (vertical && length + sliderPos === totalRows)
+        sliderCellSize = Math.max(1, length - sliderCellPos - 1);
+    if (sliderCellPos + sliderCellSize > actualSize && sliderPos + length < totalRows) {
+        if (sliderCellSize > 1) sliderCellSize--;
+        else sliderCellPos--;
+    }
+    return { actualSize, sliderCellPos, sliderCellSize };
+}
 
 export function decodeScrollBar (body, screen) {
-    if (body.length < 13) return null;
+    if (body.length < 11)
+        fail('invalid ENPTUI scrollbar major length', SenseCode.INVALID_MINOR_LENGTH);
 
     const flag1       = body[0];
-    const direction   = body[1];
-    const rowOffset   = body[2];
-    const colOffset   = body[3];
-    const length      = body[4];
-    const totalRows   = readU32(body, 5);
-    const visibleRows = readU32(body, 9);
-    const sliderPos   = body.length >= 17 ? readU32(body, 13) : 0;
+    const direction   = (flag1 & 0x80) !== 0 ? 1 : 0;
+    const totalRows   = readU32(body, 2);
+    const sliderPos   = readU32(body, 6);
+    const length      = body[10];
+    const anchorRow   = (screen.cursor / screen.cols) | 0;
+    const anchorCol   = screen.cursor % screen.cols;
+    const vertical    = direction === 0;
+    const boundsWidth = vertical ? 3 : length;
+    const boundsHeight = vertical ? length : 1;
+    if (length < 1 || totalRows < 1 || sliderPos > totalRows
+        || anchorRow + boundsHeight > screen.rows
+        || anchorCol + boundsWidth > screen.cols) return null;
+
+    // These are the exact cell-space quantities calculated by HOD's
+    // ENPTUIScrollBarField.init(). Keep the wire value (`sliderPos`) too,
+    // because that is what field metadata and host responses represent.
+    const { actualSize, sliderCellPos, sliderCellSize } =
+        scrollBarMetrics(length, totalRows, sliderPos, vertical);
 
     return {
         kind: ConstructKind.SCROLL_BAR,
         cursorAtStart: screen.cursor,
         flag1,
         direction,
-        rowOffset,
-        colOffset,
+        rowOffset: anchorRow,
+        colOffset: anchorCol,
         length,
         totalRows,
-        visibleRows,
+        visibleRows: length,
         sliderPos,
+        actualSize,
+        sliderCellPos,
+        sliderCellSize,
+        boundsWidth,
+        boundsHeight,
+        moveCursor: (flag1 & 0x40) !== 0,
+        // HOD explicitly initializes standalone scroll pseudo-fields with
+        // MDT off; only an operator scroll action marks them modified.
+        modified: false,
+        scrollIncrement: 0,
     };
 }
 
 function readU32 (bytes, off) {
-    return ((bytes[off]   & 0xFF) << 24)
-         | ((bytes[off+1] & 0xFF) << 16)
-         | ((bytes[off+2] & 0xFF) <<  8)
-         |  (bytes[off+3] & 0xFF);
+    return ((bytes[off] & 0xFF) * 0x1000000)
+         + ((bytes[off + 1] & 0xFF) << 16)
+         + ((bytes[off + 2] & 0xFF) << 8)
+         +  (bytes[off + 3] & 0xFF);
 }

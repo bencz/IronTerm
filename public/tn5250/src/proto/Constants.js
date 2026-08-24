@@ -237,6 +237,7 @@ export const Shift = Object.freeze({
 
 // ---- AID-generating keys (RFC 1205 §5.4) -----------------------------
 export const Aid = Object.freeze({
+    POINTER:    0x80,
     PF1:  0x31, PF2:  0x32, PF3:  0x33, PF4:  0x34, PF5:  0x35, PF6:  0x36,
     PF7:  0x37, PF8:  0x38, PF9:  0x39, PF10: 0x3A, PF11: 0x3B, PF12: 0x3C,
     PF13: 0xB1, PF14: 0xB2, PF15: 0xB3, PF16: 0xB4, PF17: 0xB5, PF18: 0xB6,

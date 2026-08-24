@@ -331,7 +331,7 @@ export class InboundParser {
             this.screen.nullModifiedFields();
         }
 
-        if (cc1 & 0x08) this.screen.keyboardLocked = false;
+        if (cc1 & 0x08) this.screen.unlockKeyboard();
         if (cc1 & 0x04) this.screen.alarm = true;
         if (cc1 & 0x02) { this.screen.messageLight = false; }
         if (cc1 & 0x01) { this.screen.messageLight = true;  }
@@ -456,7 +456,7 @@ export class InboundParser {
         this.readType    = kind;
         this.readPending = true;
         this.invited     = true;
-        this.screen.keyboardLocked = false;
+        this.screen.unlockKeyboard();
     }
 
     // ---- write-structured-field (Query / ENPTUI) ----------------------

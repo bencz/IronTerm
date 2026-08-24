@@ -186,11 +186,11 @@ The 5250 client lives under `/tn5250/` and shares the toolbar, OIA,
 canvas renderer, profile store, and EBCDIC tables with the 3270 side -
 only the wire protocol and the datastream parser are separate.
 
-It's tagged **beta** because it has had a lot less mileage on real
-hardware than the 3270 side. Signon, WTD, input fields and AID keys
-work against pub400 and IBM i 7.x; ENPTUI is wired up but not all
-primitives have been exercised end-to-end. Expect rough edges - please
-file issues with a screenshot and the host you hit them on.
+It's tagged **beta** because it has had less mileage on real hardware
+than the 3270 side. Signon, WTD, input fields and AID keys work against
+pub400 and IBM i 7.x. The ENPTUI implementation is checked against the
+open IBM Host On-Demand/ACS classes, but uncommon host combinations still
+need end-to-end coverage. Please file issues with a screenshot and host.
 
 **Telnet / TN5250E (RFC 1205, RFC 4777):**
 
@@ -225,9 +225,14 @@ file issues with a screenshot and the host you hit them on.
 
 - WDSF (Write to Display Structured Field) decoder
 - Primitives: Window, ScrollBar, Selection Field, menu/push-button variants,
-  grids, programmable mouse regions, Write Data, and cascading removal
-- Keyboard/mouse interaction, mnemonic activation, restricted-window cursor,
-  selection state, overlay rendering, and SAVE/RESTORE persistence
+  ruled grids, programmable mouse events, Write Data, and cascading removal
+- IBM-compatible pseudo-field responses for selections, attached/standalone
+  scrollbars, and two-event programmable mouse AIDs
+- Keyboard/mouse interaction, selection character and mnemonic activation,
+  restricted-window cursor, menu/pull-down cancellation, deselect-on-unlock,
+  overlay rendering, and SAVE/RESTORE persistence
+- Malformed structures are rejected with the matching `0x100501xx` ENPTUI
+  sense code before the protocol-level negative response is sent
 - The 5292-2 Query Reply advertises enhanced graphics; other models do not
 
 **Models supported (5250):**

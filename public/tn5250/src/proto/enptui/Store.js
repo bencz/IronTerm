@@ -51,9 +51,15 @@ export class EnptuiStore {
         return removed;
     }
 
-    /** Remove every construct that lies entirely inside `window`'s
-     *  bounding rectangle, the way a CreateWindow region is
-     *  destroyed - any SelectionField, ScrollBar, Grid, Mouse region
+    removeWhere (predicate) {
+        const removed = this.constructs.filter(predicate);
+        this.constructs = this.constructs.filter(c => !predicate(c));
+        return removed;
+    }
+
+    /** Remove every input construct that lies entirely inside `window`'s
+     *  bounding rectangle, the way a GUI window is destroyed - any
+     *  SelectionField or ScrollBar
      *  that the host previously anchored INSIDE the window goes away
      *  with it. Returns the removed children for inspection. */
     removeChildrenOf (window) {
@@ -63,15 +69,53 @@ export class EnptuiStore {
         const bot    = top  + window.height - 1;
         const right  = left + window.width  - 1;
         const inside = (r, c) => r >= top && r <= bot && c >= left && c <= right;
+        const boundsOf = construct => {
+            if (Number.isInteger(construct.boundsTopRow)
+                && Number.isInteger(construct.boundsLeftCol)) {
+                return {
+                    top: construct.boundsTopRow,
+                    left: construct.boundsLeftCol,
+                    bottom: construct.boundsTopRow + (construct.boundsHeight ?? 1) - 1,
+                    right: construct.boundsLeftCol + (construct.boundsWidth ?? 1) - 1,
+                };
+            }
+            if (construct.kind === ConstructKind.SCROLL_BAR) {
+                const cTop = construct.rowOffset + 1;
+                const cLeft = construct.colOffset + 1;
+                return {
+                    top: cTop,
+                    left: cLeft,
+                    bottom: cTop + (construct.boundsHeight ?? 1) - 1,
+                    right: cLeft + (construct.boundsWidth ?? 1) - 1,
+                };
+            }
+            if (construct.itemPositions?.length) {
+                const positions = construct.itemPositions.filter(Boolean);
+                if (!positions.length) return null;
+                return {
+                    top: Math.min(...positions.map(p => p.row)),
+                    left: Math.min(...positions.map(p => p.col)),
+                    bottom: Math.max(...positions.map(p => p.row)),
+                    right: Math.max(...positions.map(p => p.col + (p.hitWidth ?? 1) - 1)),
+                };
+            }
+            const r = construct.topRow ?? construct.row;
+            const c = construct.leftCol ?? construct.col;
+            if (!Number.isInteger(r) || !Number.isInteger(c)) return null;
+            return { top: r, left: c, bottom: r, right: c };
+        };
         const removed = [];
         this.constructs = this.constructs.filter(c => {
-            // Window itself stays; we only cascade children.
-            if (c === window) return true;
-            // Resolve construct row/col (some use top/left, others row/col).
-            const r = c.topRow ?? c.row ?? null;
-            const cc = c.leftCol ?? c.col ?? null;
-            if (r === null || cc === null) return true;
-            if (inside(r, cc)) { removed.push(c); return false; }
+            // IBM cascades only field constructs (construct types 2..5),
+            // never another window, the global grid, or PMB definitions.
+            if (![ConstructKind.SELECTION_FIELD, ConstructKind.MENU_BAR,
+                ConstructKind.PUSH_BUTTONS, ConstructKind.SCROLL_BAR].includes(c.kind)) return true;
+            const bounds = boundsOf(c);
+            if (!bounds) return true;
+            if (inside(bounds.top, bounds.left) && inside(bounds.bottom, bounds.right)) {
+                removed.push(c);
+                return false;
+            }
             return true;
         });
         return removed;

@@ -23,7 +23,7 @@ export const Sf = Object.freeze({
     UNREST_WIN_CURSOR:     0x52,    //  82 — allow cursor outside current window
     SCROLL_BAR_FLD:        0x53,    //  83 — scroll bar with thumb position
     WRITE_DATA:            0x54,    //  84 — inject data into a previously-defined construct
-    PROG_MOUSE_BUTTON:     0x55,    //  85 — register a mouse-event handler region
+    PROG_MOUSE_BUTTON:     0x55,    //  85 — register global pointer-event definitions
     REMOVE_GUI_SEL_FLD:    0x58,    //  88 — destroy a selection field
     REMOVE_GUI_WINDOW:     0x59,    //  89 — destroy a window
     REMOVE_SCROLL_BAR_FLD: 0x5B,    //  91 — destroy a scroll bar
@@ -56,29 +56,9 @@ export function isSelection  (t) {
 export function isSingleSelect (t) {
     return t === SelType.SINGLE_SEL_FLD || t === SelType.SINGLE_SEL_LIST || t === SelType.SINGLE_SEL_PULL;
 }
-
-// ---- Window border styles (CreateWindow flag2 low nibble) --------------
-export const BorderStyle = Object.freeze({
-    UPPER_HORIZONTAL: 0,
-    LOWER_HORIZONTAL: 1,
-    LEFT_VERTICAL:    2,
-    RIGHT_VERTICAL:   3,
-    PLAIN_BOX:        4,
-    H_RULED_BOX:      5,
-    V_RULED_BOX:      6,
-    HV_RULED_BOX:     7,
-});
-
-// ---- Window line styles -----------------------------------------------
-export const LineStyle = Object.freeze({
-    SOLID:         0,
-    BOLD:          1,
-    DOUBLE:        2,
-    DOTTED:        3,
-    DASHED:        8,
-    BOLD_DASHED:   9,
-    DOUBLE_DASHED: 10,
-});
+export function isMultiSelect (t) {
+    return t === SelType.MULTI_SEL_FLD || t === SelType.MULTI_SEL_LIST || t === SelType.MULTI_SEL_PULL;
+}
 
 // ---- ENPTUI construct kinds (used by ScreenBuffer.enptui storage) -----
 export const ConstructKind = Object.freeze({
@@ -87,7 +67,7 @@ export const ConstructKind = Object.freeze({
     SELECTION_FIELD:        'selectionField',
     PUSH_BUTTONS:           'pushButtons',
     SCROLL_BAR:             'scrollBar',
-    MOUSE_REGION:           'mouseRegion',
+    MOUSE_EVENTS:           'mouseEvents',
     GRID:                   'grid',
 });
 
@@ -95,10 +75,14 @@ export const ConstructKind = Object.freeze({
 // Inside each "choice text" entry of a DefineSelFld, a flag byte tells
 // us whether the item is selected, available, or has indicators.
 export const ChoiceFlag = Object.freeze({
-    SELECTED:      0x10,
-    UNAVAILABLE:   0x20,
-    AID_KEY:       0x40,
-    NUMBERED:      0x80,
+    STATE_MASK:       0xC0,
+    SELECTED:         0x40,
+    UNAVAILABLE:      0x80,
+    NEW_ROW:          0x20,
+    MNEMONIC_OFFSET:  0x08,
+    AID_KEY:          0x04,
+    NUMERIC_SINGLE:   0x01,
+    NUMERIC_DOUBLE:   0x02,
 });
 
 // ---- Sense codes we can raise on malformed ENPTUI ---------------------
@@ -106,15 +90,16 @@ export const ChoiceFlag = Object.freeze({
 // host as a negative response so it stops sending broken structured
 // fields rather than the client silently rendering garbage.
 export const SenseCode = Object.freeze({
-    MAJOR_LEN_ERROR:           0x10079010,
-    WSF_CLASS_TYPE:            0x10079011,
-    WSF_PARM:                  0x10079012,
-    INVALID_MINOR_LENGTH:      0x10079013,
-    GRID_CONSTR:               0x10079050,
-    GRID_OFFSET:               0x10079051,
-    GRID_HVOPT:                0x10079052,
-    GRID_RESTORE:              0x10079053,
-    WRITE_DATA_ERROR:          0x10079100,
-    WRITE_DATA_TOO_LONG:       0x10079101,
-    WRITE_DATA_CCSID_ERROR:    0x10079105,
+    MAJOR_LEN_ERROR:           0x10050110,
+    WSF_CLASS_TYPE:            0x10050111,
+    WSF_PARM:                  0x10050112,
+    INVALID_MINOR_LENGTH:      0x10050113,
+    PREMATURE_DS_TERMINATION:  0x10050121,
+    WRITE_DATA_ERROR:          0x10050140,
+    WRITE_DATA_TOO_LONG:       0x10050141,
+    GRID_CONSTR:               0x10050150,
+    GRID_OFFSET:               0x10050151,
+    GRID_HVOPT:                0x10050152,
+    GRID_RESTORE:              0x10050153,
+    WRITE_DATA_CCSID_ERROR:    0x10050155,
 });

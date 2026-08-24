@@ -313,7 +313,7 @@ export class Terminal {
                 if (!this.#processPayload(payload)) return;
                 this.parser.readPending = true;
                 this.parser.invited     = true;
-                this.screen.keyboardLocked = false;
+                this.screen.unlockKeyboard();
                 break;
             case GdsConsts.Op.OUTPUT_ONLY:
                 if (!this.#processPayload(payload)) return;
@@ -408,6 +408,12 @@ export class Terminal {
             // cursor stuck at (1,1).
             const target = this.screen.firstFocusable();
             if (target !== null) this.screen.cursor = target;
+        }
+        if (!this.screen.keyboardLocked && this.screen.queuedPointerAid) {
+            const queuedAid = this.screen.queuedPointerAid;
+            this.screen.queuedPointerAid = null;
+            this.sendAid(queuedAid);
+            return;
         }
         debug.log(`after record: fields=${this.screen.fields.length} cursor=${this.screen.cursor} readPending=${this.parser.readPending}`);
         this.draw();

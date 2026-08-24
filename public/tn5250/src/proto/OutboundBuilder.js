@@ -64,6 +64,11 @@ export class OutboundBuilder {
         const row = (this.screen.cursor / this.screen.cols | 0) + 1;
         const col = (this.screen.cursor % this.screen.cols) + 1;
         out.push(row, col, aid);
+        if (aid === Aid.POINTER && this.screen.pendingPointerAid) {
+            const pointer = this.screen.pendingPointerAid;
+            out.push(pointer.row, pointer.col, pointer.aid);
+            this.screen.pendingPointerAid = null;
+        }
 
         // Some AIDs (CLEAR, HELP, Roll, PA-like keys) submit no field
         // data; everything else streams the modified fields.
@@ -73,6 +78,7 @@ export class OutboundBuilder {
                 if (!includeAll && !f.modified) continue;
                 this.#emitField(out, f, { preserveNulls });
             }
+            this.#emitEnptuiFields(out, { includeAll });
         }
         return Uint8Array.from(out);
     }
@@ -92,7 +98,55 @@ export class OutboundBuilder {
             if (!includeAll && !f.modified) continue;
             this.#emitField(out, f, { preserveNulls });
         }
+        this.#emitEnptuiFields(out, { includeAll });
         return Uint8Array.from(out);
+    }
+
+    #emitEnptuiFields (out, { includeAll = false } = {}) {
+        for (const construct of this.screen.enptui?.all ?? []) {
+            const isSelection = construct.kind === 'selectionField'
+                || construct.kind === 'menuBar'
+                || construct.kind === 'pushButtons';
+            const isStandaloneScroll = construct.kind === 'scrollBar' && !construct.parent;
+            if (!isSelection && !isStandaloneScroll) continue;
+            if (!includeAll && !construct.modified) continue;
+
+            const addr = construct.cursorAtStart;
+            if (!Number.isInteger(addr) || addr < 0 || addr >= this.screen.size) continue;
+            out.push(0x11,
+                ((addr / this.screen.cols) | 0) + 1,
+                (addr % this.screen.cols) + 1);
+
+            if (isStandaloneScroll) {
+                this.#pushU32(out, construct.scrollIncrement ?? 0);
+                continue;
+            }
+
+            // IBM serializes every non-multi construct (including menu bars
+            // and push buttons) as a two-byte selected-choice index.
+            if (!construct.multi) {
+                const selected = construct.items.findIndex(item => item.selected);
+                out.push(0x00, selected < 0 ? 0x00 : selected + 0x20);
+            } else {
+                for (const item of construct.items) out.push(item.selected ? 0xF1 : 0x00);
+            }
+
+            const attached = (this.screen.enptui?.all ?? []).find(c =>
+                c.kind === 'scrollBar' && c.parent === construct);
+            if (attached) this.#pushU32(out, attached.scrollIncrement ?? 0);
+
+            // HOD clears selected choices while an auto-enter response is
+            // being collected, preventing a transient button/menu choice
+            // from remaining latched after its AID has been sent.
+            if (construct.autoEnter) {
+                for (const item of construct.items) item.selected = false;
+            }
+        }
+    }
+
+    #pushU32 (out, value) {
+        const n = Math.max(0, Number(value) || 0) >>> 0;
+        out.push((n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF);
     }
 
     #emitField (out, f, { preserveNulls = false } = {}) {
