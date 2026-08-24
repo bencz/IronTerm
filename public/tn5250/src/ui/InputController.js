@@ -20,10 +20,16 @@ export class InputController {
      * @param {(s:string)=>void}    hooks.onType
      * @param {()=>void}            hooks.onTab
      * @param {()=>void}            hooks.onBackspace
+     * @param {()=>void}            hooks.onDelete
+     * @param {()=>void}            hooks.onEraseEof
+     * @param {()=>void}            hooks.onEraseInput
+     * @param {()=>void}            hooks.onInsert
      * @param {(addr:number)=>void} hooks.onMoveCursor
      * @param {(text:string)=>void} hooks.onFlash
      * @param {()=>void}            hooks.onSystemRequest
      * @param {()=>void}            hooks.onFieldExit
+     * @param {()=>void}            hooks.onFieldPlus
+     * @param {()=>void}            hooks.onFieldMinus
      */
     constructor (hooks) {
         this.h = hooks;
@@ -189,6 +195,12 @@ export class InputController {
             if (event.code === 'NumpadEnter') {
                 event.preventDefault(); this.h.onFieldExit?.(); return;
             }
+            if (event.code === 'NumpadAdd') {
+                event.preventDefault(); this.h.onFieldPlus?.(); return;
+            }
+            if (event.code === 'NumpadSubtract') {
+                event.preventDefault(); this.h.onFieldMinus?.(); return;
+            }
 
             // Alt+letter: ENPTUI mnemonic activation. Walk every
             // selection field / menu bar / push-button group and find
@@ -209,10 +221,12 @@ export class InputController {
                     this.selection.clear();
                     return;
                 }
-                // Error-reset: clears the operator-input-inhibit lock
-                // without sending anything. Same role as 5250 Reset key.
+                // Error Reset clears local error/alarm state. It must not
+                // override a host-owned system-wait keyboard lock.
                 event.preventDefault();
-                this.screen.keyboardLocked = false;
+                this.screen.alarm = false;
+                this.screen.errorMode = false;
+                this.screen.errorHelpMode = false;
                 this.h.onFlash?.('reset');
                 this.renderer.draw();
                 return;
@@ -234,6 +248,14 @@ export class InputController {
                 return;
             }
             if (event.key === 'Backspace')  { event.preventDefault(); this.h.onBackspace?.(); return; }
+            if (event.key === 'Insert')     { event.preventDefault(); this.h.onInsert?.(); return; }
+            if (event.key === 'Delete') {
+                event.preventDefault();
+                if (event.ctrlKey || event.metaKey) this.h.onEraseInput?.();
+                else if (event.altKey) this.h.onEraseEof?.();
+                else this.h.onDelete?.();
+                return;
+            }
 
             if (event.key === 'Home')       { event.preventDefault(); this.#home(); return; }
             if (event.key === 'End')        { event.preventDefault(); this.#end(); return; }
@@ -284,8 +306,8 @@ export class InputController {
     /** Home goes to the first character of the first unprotected,
      *  non-bypass field (matches IBM 5250 Home key behaviour). */
     #home () {
-        const target = this.screen.fields.find(f => !f.bypass);
-        if (target) this.h.onMoveCursor?.((target.start + 1) % this.screen.size);
+        const target = this.screen.homePosition();
+        if (target !== null) this.h.onMoveCursor?.(target);
     }
 
     /** End walks the current field forward to the last non-null cell -

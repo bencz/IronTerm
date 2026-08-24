@@ -26,7 +26,6 @@
 
 import { Aid, Gds, Adjust } from './Constants.js';
 
-const ATTR_DEFAULT = 0x20;
 const EBC_SPACE    = 0x40;
 const EBC_ZERO     = 0xF0;
 
@@ -58,7 +57,8 @@ export class OutboundBuilder {
      *      <row> <col> <aid> [<SBA><row><col><field-data>]*
      *  Each modified field is preceded by an SBA pointing at its first
      *  data cell (one past the SF attribute byte). */
-    buildAidResponse (aid, { includeAll = false, preserveNulls = false } = {}) {
+    buildAidResponse (aid, { includeAll = false, preserveNulls = false,
+                             shortRead = false } = {}) {
         const out = [];
         // Cursor row/col are 1-based on the wire.
         const row = (this.screen.cursor / this.screen.cols | 0) + 1;
@@ -72,11 +72,11 @@ export class OutboundBuilder {
 
         // Some AIDs (CLEAR, HELP, Roll, PA-like keys) submit no field
         // data; everything else streams the modified fields.
-        if (!this.#isShortRead(aid)) {
-            for (const f of this.screen.fields) {
+        if (!shortRead && !this.#isShortRead(aid)) {
+            for (const f of this.#orderedFields()) {
                 if (f.bypass) continue;
                 if (!includeAll && !f.modified) continue;
-                this.#emitField(out, f, { preserveNulls });
+                this.#emitField(out, f, { preserveNulls, trimTrailing: !includeAll });
             }
             this.#emitEnptuiFields(out, { includeAll });
         }
@@ -93,10 +93,10 @@ export class OutboundBuilder {
             const col = (this.screen.cursor % this.screen.cols) + 1;
             out.push(row, col, aid & 0xFF);
         }
-        for (const f of this.screen.fields) {
+        for (const f of this.#orderedFields()) {
             if (f.bypass) continue;
             if (!includeAll && !f.modified) continue;
-            this.#emitField(out, f, { preserveNulls });
+            this.#emitField(out, f, { preserveNulls, trimTrailing: !includeAll });
         }
         this.#emitEnptuiFields(out, { includeAll });
         return Uint8Array.from(out);
@@ -149,7 +149,7 @@ export class OutboundBuilder {
         out.push((n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF);
     }
 
-    #emitField (out, f, { preserveNulls = false } = {}) {
+    #emitField (out, f, { preserveNulls = false, trimTrailing = true } = {}) {
         const startData = (f.start + 1) % this.screen.size;
         const row = (startData / this.screen.cols | 0) + 1;
         const col = (startData % this.screen.cols) + 1;
@@ -157,17 +157,39 @@ export class OutboundBuilder {
 
         // Collect the field's data bytes first. `f.length` is the count
         // of data cells (per IBM SF order semantics).
-        const bytes = new Array(f.length).fill(preserveNulls ? 0x00 : EBC_SPACE);
+        const raw = new Array(f.length).fill(0x00);
         for (let i = 0; i < f.length; i++) {
             const idx = (startData + i) % this.screen.size;
             const cell = this.screen.cells[idx];
             if (cell.startField) {
                 // Hit the next field's attribute place - shrink length.
-                bytes.length = i;
+                raw.length = i;
                 break;
             }
-            bytes[i] = preserveNulls ? cell.byte : (cell.byte === 0 ? EBC_SPACE : cell.byte);
+            raw[i] = cell.byte;
         }
+
+        if (trimTrailing && !f.transparent) {
+            while (raw.length > 0 && raw[raw.length - 1] === 0x00) raw.pop();
+        }
+
+        // A signed-numeric field reserves its final display position for
+        // a minus marker. On the wire that marker is removed and encoded
+        // as a negative zone (0xD) on the preceding digit.
+        if (f.signedNumeric && raw.length === f.length) {
+            const negative = raw[raw.length - 1] === 0x60;
+            raw.pop();
+            if (negative && raw.length > 0)
+                raw[raw.length - 1] = (raw[raw.length - 1] & 0x0F) | 0xD0;
+        }
+
+        if (f.transparent) {
+            out.push(0x10, (raw.length >>> 8) & 0xFF, raw.length & 0xFF);
+            for (const byte of raw) out.push(byte);
+            return;
+        }
+
+        const bytes = raw.map(byte => preserveNulls || byte !== 0x00 ? byte : EBC_SPACE);
 
         // Apply field-level right-adjust / zero-fill before transmit.
         // 5250 reference: the bits in FFW byte 2 low nibble decide:
@@ -185,6 +207,23 @@ export class OutboundBuilder {
         }
 
         for (const b of bytes) out.push(b);
+    }
+
+    #orderedFields () {
+        const fields = this.screen.fields;
+        const first = this.screen.soh?.resequence ?? 0;
+        if (first <= 0) return fields;
+        const ordered = [];
+        const visited = new Set();
+        let number = first;
+        while (number > 0 && number !== 0xFF && !visited.has(number)) {
+            visited.add(number);
+            const field = fields[number - 1];
+            if (!field) break;
+            ordered.push(field);
+            number = field.resequence;
+        }
+        return ordered.length > 0 ? ordered : fields;
     }
 
     #isShortRead (aid) {
@@ -241,7 +280,7 @@ export class OutboundBuilder {
         // 46-48: reserved
         // Move Cursor + Read MDT Immediate Alternate are implemented.
         a[49] = 0x03;
-        const large = this.screen.rows > 24 || this.screen.cols > 80;
+        const large = ['3180-2', '3477-FC', '3477-FG'].includes(modelKey);
         const color = ['5292-2', '3179-2', '3477-FC'].includes(modelKey);
         a[50] = (large ? 0x30 : 0x10) | (color ? 0x01 : 0x00);
         // Enhanced graphics is model/caller-controlled. Terminal enables
@@ -255,28 +294,48 @@ export class OutboundBuilder {
     buildReadScreenResponse () {
         const n = this.screen.size;
         const out = new Uint8Array(n);
-        let lastAttr = ATTR_DEFAULT;
         for (let i = 0; i < n; i++) {
             const cell = this.screen.cells[i];
             if (cell.attributePlace) {
-                lastAttr = cell.byte;
-                out[i] = lastAttr;
+                out[i] = cell.byte;
             } else {
-                out[i] = cell.byte === 0 ? 0x40 : cell.byte;
+                out[i] = cell.byte;
             }
         }
         return out;
     }
 
-    /** RFC 1205 Save Screen response: ESC Restore-Screen followed by
-     *  the complete screen image. The host later returns this exact
-     *  payload in a Restore Screen operation. */
-    buildSaveScreenResponse () {
-        const image = this.buildReadScreenResponse();
-        const out = new Uint8Array(2 + image.length);
-        out[0] = 0x04;                  // command escape
-        out[1] = 0x12;                  // Restore Screen command
-        out.set(image, 2);
+    /** Read Screen With Extended Attributes, SBCS form. Each display
+     *  row is trimmed after its last non-null byte and terminated by an
+     *  IAC byte. TelnetStream performs the required IAC escaping. */
+    buildReadScreenWithExtendedAttributes () {
+        const out = [];
+        for (let row = 0; row < this.screen.rows; row++) {
+            const start = row * this.screen.cols;
+            let end = start + this.screen.cols - 1;
+            while (end >= start && this.screen.cells[end].byte === 0x00) end--;
+            for (let i = start; i <= end; i++) out.push(this.screen.cells[i].byte);
+            out.push(0xFF);
+        }
+        return Uint8Array.from(out);
+    }
+
+    /** Save Screen responses carry an opaque terminal-owned token. The
+     *  host stores it and later returns it after Restore Screen. Partial
+     *  saves use the required zero-length preamble and 16-bit length. */
+    buildSaveScreenResponse (token, { partial = false } = {}) {
+        if (!partial) {
+            const out = new Uint8Array(2 + token.length);
+            out[0] = 0x04;              // command escape
+            out[1] = 0x12;              // Restore Screen command
+            out.set(token, 2);
+            return out;
+        }
+
+        const out = new Uint8Array(8 + token.length);
+        out.set([0x04, 0x13, 0x00, 0x00,
+                 0x04, 0x13, (token.length >>> 8) & 0xFF, token.length & 0xFF]);
+        out.set(token, 8);
         return out;
     }
 

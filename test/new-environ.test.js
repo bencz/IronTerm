@@ -27,6 +27,14 @@ test('NEW-ENVIRON sends only explicitly requested variables', () => {
   assert.doesNotMatch(text, /KBDTYPE|CODEPAGE|IBMSENDCONFREC/);
 });
 
+test('an empty device name lets the host allocate the workstation', () => {
+  const bytes = outputFor({ kbdType: 'USB', codePage: '037' },
+    [NewEnviron.USERVAR]);
+  const text = String.fromCharCode(...bytes);
+  assert.doesNotMatch(text, /DEVNAME/);
+  assert.match(text, /KBDTYPE|CODEPAGE/);
+});
+
 test('plaintext bypass signon uses an empty IBMRSEED value', () => {
   const request = [
     NewEnviron.VAR, ...ascii('USER'),

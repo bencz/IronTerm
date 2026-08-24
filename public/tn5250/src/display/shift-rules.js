@@ -27,31 +27,31 @@ export function isSignChar (b)     { return b === EBC_DOT || b === EBC_COMMA || 
 /** Decide whether `byte` is acceptable in a field with the given FFW
  *  shift-type. Follows the IBM 5250 reference:
  *
- *   DATA_ALL      0  - any printable byte allowed
- *   DATA_X        1  - alpha shift; anything printable (uppercased
- *                      where applicable, but caller handles monocase)
- *   DATA_A        2  - alpha only: letters + space + . , -
- *   DATA_N        3  - numeric shift: same as DATA_ALL today
- *   DATA_S        4  - numeric only: digits, space, . , - +
- *   DATA_DIGITS   5  - digits 0-9 ONLY
- *   DATA_DBCS     6  - double-byte; we don't policy-check
- *   DATA_SIGNED_N 7  - digits and minus sign only */
+ *   ALPHA_SHIFT    0  - any printable byte; keyboard starts alpha
+ *   ALPHA_ONLY     1  - letters + space + . , -
+ *   NUMERIC_SHIFT  2  - any printable byte; keyboard starts numeric
+ *   NUMERIC_ONLY   3  - digits, space and numeric punctuation
+ *   KANA_SHIFT     4  - language-specific; SBCS fallback accepts input
+ *   DIGITS_ONLY    5  - digits 0-9 only
+ *   IO_ONLY        6  - host-managed input/output field
+ *   SIGNED_NUMERIC 7  - digits and sign */
 export function acceptsByShift (byte, shift) {
     if (byte < 0x40) return false;        // control bytes never accepted
     switch (shift) {
-        case Shift.DATA_ALL:
-        case Shift.DATA_X:
-        case Shift.DATA_N:
-        case Shift.DATA_DBCS:
+        case Shift.ALPHA_SHIFT:
+        case Shift.NUMERIC_SHIFT:
+        case Shift.KANA_SHIFT:
             return true;
-        case Shift.DATA_A:
+        case Shift.ALPHA_ONLY:
             return isEbcdicLetter(byte) || byte === EBC_SPACE
                 || byte === EBC_DOT || byte === EBC_COMMA || byte === EBC_MINUS;
-        case Shift.DATA_S:
+        case Shift.NUMERIC_ONLY:
             return isEbcdicDigit(byte) || isSignChar(byte);
-        case Shift.DATA_DIGITS:
+        case Shift.DIGITS_ONLY:
             return isEbcdicDigit(byte);
-        case Shift.DATA_SIGNED_N:
+        case Shift.IO_ONLY:
+            return false;
+        case Shift.SIGNED_NUMERIC:
             return isEbcdicDigit(byte) || byte === EBC_MINUS;
         default:
             return true;

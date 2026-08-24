@@ -195,7 +195,8 @@ need end-to-end coverage. Please file issues with a screenshot and host.
 **Telnet / TN5250E (RFC 1205, RFC 4777):**
 
 - BINARY, EOR, SUPPRESS-GO-AHEAD, TERMINAL-TYPE, NEW-ENVIRON negotiation
-- NEW-ENVIRON variables: `DEVNAME`, `KBDTYPE`, `CODEPAGE`, `CHARSET`,
+- NEW-ENVIRON variables: optional `DEVNAME` (blank lets the host allocate
+  an available device), `KBDTYPE`, `CODEPAGE`, `CHARSET`,
   and the bypass-signon set (`IBMRSEED`, `USER`, `IBMSUBSPWD`)
 - 10-byte GDS record header on inbound and outbound records
 - GDS opcodes: NO-OP, INVITE, OUTPUT-ONLY, PUT-GET, SAVE/RESTORE-SCREEN,
@@ -207,17 +208,25 @@ need end-to-end coverage. Please file issues with a screenshot and host.
 
 - Commands: `WTD`, `WEC`, `WECW` (write error code to window),
   `CLEAR-UNIT`, `CLEAR-UNIT-ALT`, `CLEAR-FORMAT-TABLE`,
-  `READ-INPUT-FIELDS`, `READ-MDT-FIELDS`, `READ-MDT-IMMEDIATE-ALT`,
-  `READ-SCREEN-IMMEDIATE`, `READ-SCREEN-TO-PRINT`,
-  `WRITE-STRUCTURED-FIELD`, `SAVE-SCREEN`, `RESTORE-SCREEN`, `ROLL`
+  `READ-INPUT-FIELDS`, `READ-MDT-FIELDS`, `READ-MDT-ALT`,
+  `READ-IMMEDIATE`, `READ-MDT-IMMEDIATE-ALT`,
+  `READ-SCREEN` basic/extended and screen-to-print variants,
+  `WRITE-STRUCTURED-FIELD`, full/partial `SAVE-SCREEN` and
+  `RESTORE-SCREEN`, `ROLL`
 - Orders: `SOH`, `RA`, `EA`, `ESC`, `TD`, `SBA`, `WEA`, `IC`, `MC`,
   `WTDSF`, `SF`
 - Basic attribute table (0x20-0x3F) - color, reverse, underline,
   blink, column separator, non-display
 - Field Format Word - bypass, dup, MDT, auto-enter, FER, monocase,
-  mandatory, right-adjust / zero-fill
+  mandatory, all SBCS data shifts, signed numeric, right-adjust / zero-fill;
+  FCW transparency and metadata for resequencing, continued/word-wrapped
+  segments, cursor progression, entry highlighting and pointer devices
+- Separate datastream write address and visible cursor, standard/alternate
+  geometry switching, virtual row-1/column-0 fields, and inclusive RA/EA
 - AID keys: Enter, Clear, Help, PF1-24, Roll Up / Down / Left / Right,
   Print, Attn, SysReq
+- Editing keys: Field Exit, Field +/- on the numeric keypad, Insert, Delete,
+  Erase EOF (Alt+Delete), Erase Input (Ctrl/Command+Delete), Home and End
 - Bypass-signon: optional `USER` / password fields in the toolbar
   short-circuit the standard signon panel (RFC 4777 §5)
 
@@ -251,7 +260,7 @@ need end-to-end coverage. Please file issues with a screenshot and host.
 
 ## Encoding
 
-Two EBCDIC code pages ship today, switchable from the toolbar dropdown
+Four EBCDIC code pages ship today, switchable from the toolbar dropdown
 and persisted per connection profile:
 
 - **CP037** - US English EBCDIC. Default. Used by classic z/OS, Hercules
@@ -260,6 +269,9 @@ and persisted per connection profile:
   bracket/caret-related punctuation positions (`[`, `]`, `^`, `¬`, `¨`,
   and `Ý`). Used by USS / z/OS Unix and modern hosts that interoperate
   with ASCII tooling.
+- **CP500** - International Latin-1 EBCDIC, commonly used by multilingual
+  host installations.
+- **CP1141** - German EBCDIC with the euro character.
 
 Switching mid-session re-renders existing cells through the new table
 immediately, no reconnect needed. Adding another code page is a 10-line
@@ -312,8 +324,8 @@ This is the realistic gap list. Nothing here blocks day-to-day TSO /
 CICS use on the 3270 side, or basic IBM i signon + green-screen use on
 the 5250 side.
 
-- **Other EBCDIC code pages** (CP500, CP297, CP285, …) - straightforward
-  to add (delta maps in `Ebcdic.js`); CP037 + CP1047 ship today
+- Additional SBCS pages can be added as verified mappings; DBCS and BIDI
+  pages remain outside the current scope.
 - **DBCS / SO/SI** (Asian double-byte)
 - **5250 printer sessions** - only display devices for now
 - **5250 ENPTUI long tail** - the actively implemented primitives are listed

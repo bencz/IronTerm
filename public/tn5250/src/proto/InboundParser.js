@@ -3,10 +3,10 @@
 // One instance per session. `process(record)` is called once per
 // telnet record (already GDS-unwrapped by the Terminal); the parser
 // then walks the commands inside that record, updating the
-// ScreenBuffer and queuing any reply records the host expects.
+// ScreenBuffer and recording any immediate reply the outer session
+// layer must send.
 //
-// Commands handled (sufficient to render a signon and submit
-// credentials against a stock IBM i):
+// Display-session commands handled:
 //
 //     0x11  WTD   Write To Display          orders below
 //     0x40  CU    Clear Unit                blanks screen + fields
@@ -14,13 +14,16 @@
 //     0x50  CFT   Clear Format Table        forgets field formats
 //     0x42  RIF   Read Input Fields         queue invite + remember readType
 //     0x52  RMDT  Read MDT Fields           queue invite + readType
-//     0x83  RMDT-Alt                        like RMDT but immediate
-//     0x62  RSI   Read Screen Immediate     reply with full screen
+//     0x72  RI    Read Immediate            return every input field
+//     0x82  RMDTA Read MDT Alternate        pending modified-field read
+//     0x83  RMDTIA Read MDT Immediate Alt   immediate modified-field read
+//     0x62/0x64   Read Screen               basic / extended-attribute form
+//     0x66-0x6C   Read Screen To Print      basic / EA / grid variants
 //     0x21  WEC   Write Error Code          like WTD into error line
 //     0x22  WEC-W Write Error Code to Win
 //     0x23  ROLL  scroll partition          rare in signon
-//     0x02  SAVE  Save Screen
-//     0x12  RST   Restore Screen
+//     0x02/0x03   Save Screen / Save Partial Screen
+//     0x12/0x13   Restore Screen / Restore Partial Screen
 //     0xF3  WSF   Write Structured Field    Query / station controls
 //
 // Orders inside WTD / WEC payloads:
@@ -28,9 +31,9 @@
 //     0x02 RA     Repeat to Address
 //     0x03 EA     Erase to Address
 //     0x04 ESC    end-of-command escape
-//     0x10 TD     Transparent Data (skip)
+//     0x10 TD     Transparent Data
 //     0x11 SBA    Set Buffer Address (row,col)
-//     0x12 WEA    Write Extended Attribute (skip; phase 2 cosmetic)
+//     0x12 WEA    Write Extended Attribute
 //     0x13 IC     Insert Cursor (row,col)
 //     0x14 MC     Move Cursor (row,col)
 //     0x15 WTDSF  Write To Display Structured Field (ENPTUI carrier)
@@ -38,7 +41,7 @@
 //
 // Anything in 0x20-0x3F sets the basic attribute (colour/highlight).
 // Any byte ≥0x40 is EBCDIC data and gets typed into the screen at the
-// current cursor.
+// current write address (which is distinct from the visible cursor).
 //
 // On error we throw - Terminal.js catches it and (when the host asked
 // for a response) sends a negative response. Right now telnet 5250
@@ -52,12 +55,9 @@ import { debugFor } from '../../../shared/src/core/debug.js';
 const debug = debugFor('tn5250.parser');
 
 export class InboundParser {
-    constructor (screen) {
+    constructor (screen, { onGeometryChange } = {}) {
         this.screen = screen;
-
-        // Queue of records to send back. Drained by Terminal after each
-        // host record is fully processed.
-        this.replies = [];
+        this.onGeometryChange = onGeometryChange ?? (() => {});
 
         // Read state - set by RIF / RMDT, consumed by sendAid().
         this.readPending  = false;
@@ -67,6 +67,7 @@ export class InboundParser {
         this.readScreenRequested = false;
         this.queryRequested = false;
         this.queryStationStateRequested = false;
+        this.saveScreenRequested = null;
 
         // Inbound record pointer (parser-local, reset per record).
         this.buf = null;
@@ -84,33 +85,20 @@ export class InboundParser {
 
     #attrSeen;
 
-    /** Queue up `record` for transmission. Drained by Terminal after
-     *  each host record is processed. */
-    queueReply (record) { this.replies.push(record); }
-
-    drainReplies () {
-        const out = this.replies;
-        this.replies = [];
-        return out;
-    }
-
-    /** Process one GDS-unwrapped record payload. Inside the payload,
-     *  commands are chained together and each one is preceded by an
-     *  ESC byte (0x04). Bytes 0x00 / 0x01 are spacer/no-op bytes the
-     *  host sometimes emits between commands; 0x07 is an audible-bell
-     *  control with two extra parameter bytes.
-     *
-     *  Layout: ( [0x00|0x01]* 0x04 <cmd> <cmd-args...> )*
-     *
-     *  Walking the stream this way matches the IBM 5250 reference
-     *  (the canonical Java implementation): every command-class byte
-     *  arrives at the top level, and we dispatch on it. */
+    /** Process one GDS-unwrapped record payload. Every command is
+     *  strictly introduced by ESC (0x04): (0x04 cmd args...)*. */
     process (payload) {
         this.buf = payload;
         this.pos = 0;
+        this.pendingCc2 = 0;
+        this.hasPendingCc2 = false;
 
         try {
             this.#dispatchCommands();
+            if (this.hasPendingCc2) this.#processCc2(this.pendingCc2);
+        } catch (error) {
+            if (error && typeof error === 'object') error.negativeResponse = true;
+            throw error;
         } finally {
             // Run the global attribute inheritance pass exactly once per
             // record. WTD and WEC orders can leave attribute places and
@@ -123,12 +111,13 @@ export class InboundParser {
 
     #dispatchCommands () {
         while (this.pos < this.buf.length) {
+            const esc = this.#u8();
+            if (esc !== Order.ESC)
+                throw this.#error(`expected command ESC at offset ${this.pos - 1}, got 0x${esc.toString(16)}`);
+            if (this.pos >= this.buf.length)
+                throw this.#error(`truncated command after ESC at offset ${this.pos - 1}`);
             const cmd = this.#u8();
             switch (cmd) {
-                case 0x00:                           // padding - skip
-                case 0x01:                           // padding - skip
-                case 0x04:                           // ESC separator before next cmd
-                    break;
                 case 0x07: {                          // audible bell + 2 reserved bytes
                     this.screen.alarm = true;
                     if (this.pos < this.buf.length) this.#u8();
@@ -138,7 +127,7 @@ export class InboundParser {
                 case Cmd.WRITE_TO_DISPLAY:           this.#wtd(true);  break;
                 case Cmd.WRITE_ERROR_CODE:           this.#wtd(false); break;
                 case Cmd.WRITE_ERROR_CODE_TO_WINDOW: this.#wtd(false); break;
-                case Cmd.CLEAR_UNIT:                 this.screen.clearUnit(); break;
+                case Cmd.CLEAR_UNIT:                 this.#clearUnit(false); break;
                 case Cmd.CLEAR_UNIT_ALT: {
                     // Clear Unit Alternate is followed by a 1-byte param
                     // that selects the alternate screen size. Per the
@@ -148,12 +137,17 @@ export class InboundParser {
                     if (param !== 0x00) {
                         throw this.#error(`CUA with invalid parameter 0x${param.toString(16)}`);
                     }
-                    this.screen.clearUnit();
+                    this.#clearUnit(true);
                     break;
                 }
                 case Cmd.CLEAR_FORMAT_TABLE:         this.screen.clearFormatTable(); break;
                 case Cmd.READ_INPUT_FIELDS:          this.#read(0x42); break;
                 case Cmd.READ_MDT_FIELDS:            this.#read(0x52); break;
+                case Cmd.READ_MDT_ALT:               this.#read(0x82); break;
+                case Cmd.READ_IMMEDIATE:
+                    this.readType = Cmd.READ_IMMEDIATE;
+                    this.readImmediateRequested = true;
+                    break;
                 case Cmd.READ_MDT_IMMEDIATE_ALT:
                     // RFC 1205: no control characters follow 0x83; return
                     // modified fields immediately with AID 0x00.
@@ -161,23 +155,48 @@ export class InboundParser {
                     this.readImmediateRequested = true;
                     break;
                 case Cmd.READ_SCREEN_IMMEDIATE:
+                case Cmd.READ_SCREEN_WITH_EA:
                 case Cmd.READ_SCREEN_TO_PRINT:
+                case Cmd.READ_SCREEN_TO_PRINT_WITH_EA:
+                case Cmd.READ_SCREEN_TO_PRINT_WITH_GRID:
+                case Cmd.READ_SCREEN_TO_PRINT_WITH_GRID_EA:
                     // Host wants the entire presentation space sent
                     // back verbatim. The actual response is built by
                     // Terminal.js using OutboundBuilder.buildReadScreenResponse.
                     // We just flag the request so the outer layer fires
                     // the response after the record is fully parsed.
-                    this.readScreenRequested = true;
+                    this.readScreenRequested = cmd;
                     break;
                 case Cmd.WRITE_STRUCTURED_FIELD:
                     this.#wsf();
                     return;        // WSF always ends the record
-                case Cmd.SAVE_SCREEN:                this.screen.saveScreen(); return;
-                case 0x03:                           // Save Partial Screen
-                    this.screen.saveScreen(); return;
-                case Cmd.RESTORE_SCREEN:             this.screen.restoreScreen(); return;
-                case 0x13:                           // Restore Partial Screen
-                    this.screen.restoreScreen(); return;
+                case Cmd.SAVE_SCREEN:
+                    this.saveScreenRequested = {
+                        partial: false,
+                        token: this.screen.saveScreen(),
+                    };
+                    break;
+                case Cmd.SAVE_PARTIAL_SCREEN:
+                    this.#savePartialScreen();
+                    break;
+                case Cmd.RESTORE_SCREEN: {
+                    const token = this.buf.slice(this.pos);
+                    this.pos = this.buf.length;
+                    if (!this.#restoreScreen(token))
+                        throw this.#stateError('unknown Save Screen token');
+                    return;
+                }
+                case Cmd.RESTORE_PARTIAL_SCREEN: {
+                    const length = this.#u16();
+                    if (length === 0) break;
+                    if (this.pos + length > this.buf.length)
+                        throw this.#error(`truncated Restore Partial Screen image at offset ${this.pos}`);
+                    const token = this.buf.slice(this.pos, this.pos + length);
+                    this.pos += length;
+                    if (!this.#restoreScreen(token))
+                        throw this.#stateError('unknown Save Partial Screen token');
+                    break;
+                }
                 case Cmd.ROLL:                       this.#roll(); break;
                 default:
                     throw this.#error(`unknown 5250 command 0x${cmd.toString(16).padStart(2,'0')} at offset ${this.pos - 1}`);
@@ -191,6 +210,20 @@ export class InboundParser {
         const error = new Error(message);
         error.negativeResponse = true;
         return error;
+    }
+
+    #stateError (message) {
+        const error = this.#error(message);
+        error.stateError = true;
+        return error;
+    }
+
+    clearTransientRequests () {
+        this.readImmediateRequested = false;
+        this.readScreenRequested = false;
+        this.queryRequested = false;
+        this.queryStationStateRequested = false;
+        this.saveScreenRequested = null;
     }
 
     #u8 ()  {
@@ -212,10 +245,12 @@ export class InboundParser {
     // ---- WTD -----------------------------------------------------------
 
     #wtd (hasControls) {
+        this.screen.beginWriteToDisplay();
+        let cc1 = null;
         if (hasControls) {
             const cc0 = this.#u8();
-            const cc1 = this.#u8();
-            this.#processCc(cc0, cc1);
+            cc1 = this.#u8();
+            this.#processCc1(cc0);
         }
 
         while (this.pos < this.buf.length) {
@@ -224,7 +259,12 @@ export class InboundParser {
                 case Order.SOH:   this.#orderSoh();   break;
                 case Order.RA:    this.#orderRa();    break;
                 case Order.EA:    this.#orderEa();    break;
-                case Order.ESC:   return;           // command terminator
+                case Order.ESC:
+                    if (cc1 !== null) this.#preprocessCc2(cc1);
+                    // The ESC belongs to the following command. At end
+                    // of record it is accepted as a WTD terminator only.
+                    if (this.pos < this.buf.length) this.pos--;
+                    return;                         // command terminator
                 case Order.TD: {
                     // Transparent Data carries `len` raw bytes that must
                     // be placed into the buffer verbatim at the cursor —
@@ -235,7 +275,7 @@ export class InboundParser {
                     const len = this.#u16();
                     if (this.pos + len > this.buf.length)
                         throw this.#error(`TD length ${len} exceeds remaining data`);
-                    if (this.screen.cursor + len > this.screen.size)
+                    if (this.screen.writeAddress + len > this.screen.size)
                         throw this.#error(`TD length ${len} overwrites end of display`);
                     for (let i = 0; i < len; i++) {
                         this.screen.placeByte(this.#u8());
@@ -296,6 +336,7 @@ export class InboundParser {
                     break;
             }
         }
+        if (cc1 !== null) this.#preprocessCc2(cc1);
     }
 
     /** Control-character bytes 0 and 1 of a WTD command (CC0/CC1).
@@ -307,30 +348,56 @@ export class InboundParser {
      *
      *     0x00 = no action (keyboard stays as-is)
      *     0x20 = lock keyboard only
-     *     0x40 = reset MDT (null) + lock
-     *     0x60 = reset MDT (keep null) + lock
-     *     0x80 = clear non-bypass (null) + lock
-     *     0xA0 = clear non-bypass + reset MDT (null) + lock
-     *     0xC0 = clear non-bypass (null) + reset MDT (null) + lock
-     *     0xE0 = clear non-bypass (keep null) + reset MDT (keep null) + lock
+     *     0x40 = reset MDT on non-bypass fields + lock
+     *     0x60 = reset MDT on all fields + lock
+     *     0x80 = clear modified non-bypass fields + lock
+     *     0xA0 = clear all non-bypass, then reset non-bypass MDT + lock
+     *     0xC0 = clear modified non-bypass, then reset non-bypass MDT + lock
+     *     0xE0 = clear all non-bypass, then reset all MDT + lock
      *
      *  CC1 - bit flags (NB: our old mapping was wrong on every bit):
      *     0x08 = unlock keyboard after WTD completes (WCC2_UNLOCK)
      *     0x04 = sound alarm (WCC2_ALARM)
      *     0x02 = message light off
      *     0x01 = message light on */
-    #processCc (cc0, cc1) {
+    #processCc1 (cc0) {
         const cc0Top = cc0 & 0xE0;
         if (cc0Top !== 0x00) this.screen.keyboardLocked = true;
-        if (cc0Top === 0x40 || cc0Top === 0x60
-         || cc0Top === 0xA0 || cc0Top === 0xC0 || cc0Top === 0xE0) {
-            this.screen.resetMdtFlags();
+        switch (cc0Top) {
+            case 0x40:
+                this.screen.resetMdtFlags(true);
+                break;
+            case 0x60:
+                this.screen.resetMdtFlags(false);
+                break;
+            case 0x80:
+                this.screen.clearNonBypassFields(true);
+                break;
+            case 0xA0:
+                this.screen.clearNonBypassFields(false);
+                this.screen.resetMdtFlags(true);
+                break;
+            case 0xC0:
+                this.screen.clearNonBypassFields(true);
+                this.screen.resetMdtFlags(true);
+                break;
+            case 0xE0:
+                this.screen.clearNonBypassFields(false);
+                this.screen.resetMdtFlags(false);
+                break;
         }
-        if (cc0Top === 0x80 || cc0Top === 0xA0
-         || cc0Top === 0xC0 || cc0Top === 0xE0) {
-            this.screen.nullModifiedFields();
-        }
+    }
 
+    #preprocessCc2 (cc1) {
+        this.screen.applyWcc2Cursor(cc1);
+        this.hasPendingCc2 = true;
+        this.pendingCc2 |= cc1 & 0x4F;
+        if ((cc1 & 0x40) === 0) this.pendingCc2 &= ~0x40;
+        if ((cc1 & 0x02) !== 0 && (cc1 & 0x01) === 0)
+            this.pendingCc2 = (this.pendingCc2 | 0x02) & ~0x01;
+    }
+
+    #processCc2 (cc1) {
         if (cc1 & 0x08) this.screen.unlockKeyboard();
         if (cc1 & 0x04) this.screen.alarm = true;
         if (cc1 & 0x02) { this.screen.messageLight = false; }
@@ -342,17 +409,17 @@ export class InboundParser {
         //   SOH <len> <flag1> <reserved> <reserved> <reserved> <errRow>
         //       <pfMask1> <pfMask2> <pfMask3>
         //
-        //   flag1 bit 0x80 = reset MDT flag on all fields
+        //   flag1 bit 0x10 = move cursor to an input field after AID
         //   errRow         = row at which the host wants error msgs
         //   pfMask1        = enable bits for PF24..PF17 (high → low)
         //   pfMask2        = enable bits for PF16..PF9
         //   pfMask3        = enable bits for PF8..PF1
         //
-        // pfMaskN bits are 1 = enabled. The terminal must refuse to send
-        // an AID for any disabled PF key (real 5250 hardware beeps and
-        // does nothing). We track the 24-bit composite mask on the
-        // screen for the OutboundBuilder / Terminal to consult.
+        // PF bits select short-read keys: cursor and AID are returned,
+        // without field data. They do not disable those keys.
         const len = this.#u8();
+        if (len < 1 || len > 7)
+            throw this.#error(`invalid SOH length ${len}`);
         const end = this.pos + len;
         if (end > this.buf.length) throw this.#error(`SOH length ${len} exceeds remaining data`);
 
@@ -363,12 +430,9 @@ export class InboundParser {
         // skipped 3 bytes between flag1 and errRow which consumed the
         // errRow itself and shifted every subsequent field by one.
         if (this.pos < end) this.#u8();   // reserved
-        if (this.pos < end) this.#u8();   // resequence
+        const resequence = (this.pos < end) ? this.#u8() : 0;
         const errRow = (this.pos < end) ? this.#u8() : 0;
-        // Three optional PF-enable bytes. Bit 7 (high) of byte 0 is PF1,
-        // bit 0 (low) is PF8; byte 1 covers PF9-PF16; byte 2 PF17-PF24.
-        // Real 5250 hardware refuses to generate an AID when its key
-        // bit is clear; we mirror the behaviour at submit time.
+        // Byte 0 covers PF24..17, byte 1 PF16..9, byte 2 PF8..1.
         const pfBytes = [
             (this.pos < end) ? this.#u8() : 0,
             (this.pos < end) ? this.#u8() : 0,
@@ -376,8 +440,12 @@ export class InboundParser {
         ];
         this.pos = end;
 
+        // IBM clears the old field-format table at every valid SOH;
+        // the following SF orders build the new table for this panel.
+        this.screen.clearFormatTable();
         this.screen.startOfHeader({
-            resetMdt: (flag1 & 0x80) !== 0,
+            cursorMoveToInput: (flag1 & 0x10) !== 0,
+            resequence,
             errRow,
             pfBytes,
         });
@@ -402,28 +470,40 @@ export class InboundParser {
         const row    = this.#u8();
         const col    = this.#u8();
         const length = this.#u8();
-        if (length < 1 || this.pos + length - 1 > this.buf.length)
+        if (length < 2 || length > 5 || this.pos + length - 1 > this.buf.length)
             throw this.#error(`invalid EA attribute-plane length ${length}`);
+        const planes = [];
         for (let i = 0; i < length - 1; i++) {
-            this.#u8();
+            planes.push(this.#u8());
         }
-        this.screen.eraseToAddress(row, col);
+        this.screen.eraseToAddress(row, col, planes);
     }
 
     #orderSba () {
         const row = this.#u8();
         const col = this.#u8();
-        this.screen.setCursor(row, col);
+        // Row 1 / column 0 is the documented virtual attribute position
+        // immediately before the presentation space. It is legal only
+        // when the next order is SF and makes that field start at (1,1).
+        if (row === 1 && col === 0) {
+            if (this.#peek() !== Order.SF)
+                throw this.#error('SBA row=1 col=0 is only valid before SF');
+            this.screen.setCursorBeforeStart();
+        } else {
+            this.screen.setWriteAddress(row, col);
+        }
     }
 
     #orderSf () {
         // SF <FFW0> [FFW1 [FCW pairs...]] <attr> <len-hi> <len-lo>
-        const ffw0 = this.#u8();
+        const first = this.#u8();
+        let ffw0 = 0;
         let ffw1 = 0;
         let attr = 0;
         const fcws = [];
 
-        if ((ffw0 & 0x40) === 0x40) {
+        if (first >= 0x40) {
+            ffw0 = first;
             ffw1 = this.#u8();
             // Walk FCW pairs until we hit the attribute byte. Tags
             // valid per IBM ref include 0x80-0x85, 0x86, 0x88-0x8A,
@@ -439,8 +519,9 @@ export class InboundParser {
             }
             attr = next;
         } else {
-            // Bypass-bit-style FFW (single-byte): the FFW IS the attr.
-            attr = ffw0;
+            // No FFW is present: the first byte is the display
+            // attribute itself. It must not leak into field flags.
+            attr = first;
         }
 
         const length = this.#u16();
@@ -452,11 +533,46 @@ export class InboundParser {
     #read (kind) {
         const cc0 = this.#u8();
         const cc1 = this.#u8();
-        this.#processCc(cc0, cc1);
+        this.lastReadCc0 = cc0;
+        this.lastReadCc1 = cc1;
         this.readType    = kind;
         this.readPending = true;
         this.invited     = true;
-        this.screen.unlockKeyboard();
+    }
+
+    #clearUnit (alternate) {
+        const rows = this.screen.rows;
+        const cols = this.screen.cols;
+        this.screen.clearUnit(alternate);
+        if (rows !== this.screen.rows || cols !== this.screen.cols)
+            this.onGeometryChange(this.screen.rows, this.screen.cols);
+    }
+
+    #savePartialScreen () {
+        const startRow = this.#u8();
+        const startCol = this.#u8();
+        this.#u8();                         // reserved
+        const depth = this.#u8();
+        const width = this.#u8() + 6;
+        const valid = startRow > 0 && startCol > 0 && depth > 0
+            && startRow + depth - 1 <= this.screen.rows
+            && startCol + width - 1 <= this.screen.cols;
+        const region = valid
+            ? { row: startRow, col: startCol, width, depth }
+            : null;
+        this.saveScreenRequested = {
+            partial: true,
+            token: this.screen.saveScreen(region),
+        };
+    }
+
+    #restoreScreen (token = null) {
+        const rows = this.screen.rows;
+        const cols = this.screen.cols;
+        const restored = this.screen.restoreScreen(token);
+        if (restored && (rows !== this.screen.rows || cols !== this.screen.cols))
+            this.onGeometryChange(this.screen.rows, this.screen.cols);
+        return restored;
     }
 
     // ---- write-structured-field (Query / ENPTUI) ----------------------
@@ -501,7 +617,7 @@ export class InboundParser {
             } else if (cls === 0x00 && type === 0x88) {
                 // 5250 Erase/Reset - same effect as Clear Unit + Clear
                 // Format Table. Apply both and resume.
-                this.screen.clearUnit();
+                this.#clearUnit(false);
                 this.screen.clearFormatTable();
             } else {
                 throw this.#error(`unsupported WSF class/type 0x${cls.toString(16)}/0x${type.toString(16)}`);

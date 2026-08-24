@@ -23,7 +23,8 @@ import { Ebcdic } from '../../../shared/src/proto/Ebcdic.js';
 import { ATTR_BASE, isAttribute, Ffw, Shift, Adjust } from '../proto/Constants.js';
 import { EnptuiStore } from '../proto/enptui/Store.js';
 import { Cell, DEFAULT_ATTR_BYTE, DEFAULT_ATTR_DESC } from './Cell.js';
-import { acceptsByShift, isEbcdicDigit, isEbcdicLetter, EBC_SPACE, EBC_DIGITS_MIN } from './shift-rules.js';
+import { acceptsByShift, isEbcdicDigit, isEbcdicLetter,
+    EBC_SPACE, EBC_MINUS, EBC_DIGITS_MIN } from './shift-rules.js';
 import { debugFor } from '../../../shared/src/core/debug.js';
 
 const debug = debugFor('tn5250.screen');
@@ -47,10 +48,15 @@ class Field {
         this.dup      = (this.ffw0 & Ffw.DUP_ALLOWED) !== 0;
         this.modified = (this.ffw0 & Ffw.MDT)         !== 0;
         this.shift    =  this.ffw0 & Ffw.SHIFT_NUMERIC;
+        this.signedNumeric = this.shift === Shift.SIGNED_NUMERIC;
+        this.ioOnly = this.shift === Shift.IO_ONLY;
 
         // FFW byte 1 — input semantics enforced at typeByte / submit time
         this.autoEnter = (this.ffw1 & Ffw.AUTO_ENTER) !== 0;
-        this.fer       = (this.ffw1 & Ffw.FER)        !== 0;
+        this.fer       = (this.ffw1 & Ffw.FER)        !== 0
+            || (this.ffw1 & Ffw.ADJUST) === Adjust.RIGHT_ZERO
+            || (this.ffw1 & Ffw.ADJUST) === Adjust.RIGHT_BLANK
+            || this.signedNumeric;
         this.monocase  = (this.ffw1 & Ffw.MONOCASE)   !== 0;
         this.mandatory = (this.ffw1 & Ffw.MANDATORY)  !== 0;
         this.adjust    =  this.ffw1 & Ffw.ADJUST;
@@ -59,19 +65,30 @@ class Field {
         // FCW (Field Control Word) pairs - tag bytes and their values
         // following the FFW. We pick out the three that affect runtime
         // behaviour; everything else stays in this.fcws for inspection.
-        //   0x86 = continued edit field (value 1=first, 2=last, 3=mid)
+        //   0x80 = next resequence number
+        //   0x84 = transparent field
+        //   0x86 = continued field segment (0x80 means word-wrap)
         //   0x88 = cursor progression order (target field id)
         //   0x89 = highlight-on-entry attribute byte
-        // Other FCW tags (0x80/0x81 right-to-left, 0x82 magnetic stripe,
-        // 0x84 self-check, 0x85 transparency, 0xB1-0xBF display attrs)
+        //   0x8A = pointer AID
+        // Other FCWs (0x82 DBCS, 0x90-0x93 Unicode/CCSID and 0xB1
+        // self-check variants)
         // are not interpreted but stay available via this.fcws.
         this.continuedKind   = 0;
         this.cursorProgress  = 0;
         this.highlightAttr   = 0;
+        this.resequence      = 0;
+        this.transparent     = false;
+        this.wordWrap        = false;
+        this.pointerAid      = 0;
         for (const [tag, val] of this.fcws) {
-            if      (tag === 0x86) this.continuedKind  = val;
+            if      (tag === 0x80) this.resequence = val;
+            else if (tag === 0x84) this.transparent = true;
+            else if (tag === 0x86 && val === 0x80) this.wordWrap = true;
+            else if (tag === 0x86) this.continuedKind  = val;
             else if (tag === 0x88) this.cursorProgress = val;
             else if (tag === 0x89) this.highlightAttr  = val;
+            else if (tag === 0x8A) this.pointerAid = val;
         }
         this.continued      = this.continuedKind !== 0;
         this.continuedFirst = this.continuedKind === 1;
@@ -89,12 +106,20 @@ export class ScreenBuffer {
     constructor (rows, cols, ebcdic) {
         this.rows = rows;
         this.cols = cols;
+        // Unit tests and embedders may use arbitrary buffer sizes, so
+        // geometry switching is opt-in. Terminal configures the real
+        // 5250 standard (24x80) and selected alternate model explicitly.
+        this.standardRows = rows;
+        this.standardCols = cols;
+        this.alternateRows = rows;
+        this.alternateCols = cols;
         this.ebcdic = ebcdic ?? Ebcdic.get('CP037');
 
         this.cells = new Array(rows * cols);
         for (let i = 0; i < this.cells.length; i++) this.cells[i] = new Cell();
 
-        this.cursor = 0;                  // index 0..size-1
+        this.cursor = 0;                  // visible/input cursor, index 0..size-1
+        this.writeAddress = 0;            // host datastream SBA
         this.fields = [];                 // ordered by start position
         this.keyboardLocked = true;       // unlocked by an unlock-keyboard CC1
         this.messageLight = false;
@@ -105,13 +130,18 @@ export class ScreenBuffer {
         this.queuedPointerAid = null;
         this.pointerMarker = null;
 
-        // SAVE/RESTORE slot. It includes ENPTUI and operator state, not
-        // just cells: System Request temporarily replaces the whole panel.
+        // SAVE/RESTORE snapshots include ENPTUI and operator state, not
+        // just cells. Tokens let the host keep more than one opaque image.
         this.savedScreen = null;
+        this.savedScreens = new Map();
+        this.nextSavedScreenId = 1;
 
-        // After WTD orders are processed, IC sets `pendingCursor`; the
-        // renderer reads it when it next paints.
+        // Cursor orders are collected while the WTD is parsed. WCC2 then
+        // resolves IC/MC and exposes the final movement to the terminal.
         this.pendingCursor = -1;
+        this.pendingInsertAddress = -1;
+        this.pendingMoveAddress = -1;
+        this.homeAddress = 0;
 
         // Running attribute "pen" - every attribute byte (0x20-0x3F)
         // emitted by the host sets this, and every subsequent data
@@ -132,19 +162,25 @@ export class ScreenBuffer {
         // the host emits another attribute place.
         this.extendedAttr = null;
 
-        // Start-of-Header state. The host emits an SOH order per WTD
-        // command (when controls are present); we keep the last one so
-        // sendAid() can refuse disabled PF keys and the renderer can
-        // colour the error line correctly. Default = all zeros, which
-        // (per the bit-is-DISABLE wire format) means every PF enabled.
+        // Start-of-Header state. PF bits select cursor+AID-only replies;
+        // the error row and cursor-to-input policy are retained too.
         this.soh = {
-            resetMdt: false,
+            cursorMoveToInput: false,
+            resequence: 0,
             errRow: 0,
             pfBytes: [0x00, 0x00, 0x00],
         };
     }
 
     get size () { return this.rows * this.cols; }
+
+    configureGeometry ({ standardRows = 24, standardCols = 80,
+                         alternateRows = standardRows, alternateCols = standardCols } = {}) {
+        this.standardRows = standardRows;
+        this.standardCols = standardCols;
+        this.alternateRows = alternateRows;
+        this.alternateCols = alternateCols;
+    }
 
     setEbcdic (ebcdic) {
         this.ebcdic = ebcdic;
@@ -158,6 +194,7 @@ export class ScreenBuffer {
         this.cells = new Array(rows * cols);
         for (let i = 0; i < this.cells.length; i++) this.cells[i] = new Cell();
         this.cursor = 0;
+        this.writeAddress = 0;
         this.fields = [];
         this.keyboardLocked = true;
         this.messageLight = false;
@@ -167,23 +204,34 @@ export class ScreenBuffer {
         this.pendingPointerAid = null;
         this.queuedPointerAid = null;
         this.pointerMarker = null;
-        this.savedScreen = null;
         this.pendingCursor = -1;
+        this.pendingInsertAddress = -1;
+        this.pendingMoveAddress = -1;
+        this.homeAddress = 0;
         this.activeAttr = DEFAULT_ATTR_DESC;
         this.extendedAttr = null;
         this.sysreqMode = false;
         this.errorMode = false;
         this.errorHelpMode = false;
-        this.soh = { resetMdt: false, errRow: 0, pfBytes: [0, 0, 0] };
+        this.soh = { cursorMoveToInput: false, resequence: 0, errRow: 0, pfBytes: [0, 0, 0] };
         this.enptui.clear();
     }
 
     // ---- mutation API used by the parser ------------------------------
 
-    clearUnit () {
+    clearUnit (alternate = false) {
+        const rows = alternate ? this.alternateRows : this.standardRows;
+        const cols = alternate ? this.alternateCols : this.standardCols;
+        if (rows !== this.rows || cols !== this.cols) {
+            this.rows = rows;
+            this.cols = cols;
+            this.cells = new Array(rows * cols);
+            for (let i = 0; i < this.cells.length; i++) this.cells[i] = new Cell();
+        }
         for (const cell of this.cells) cell.reset();
         this.fields = [];
         this.cursor = 0;
+        this.writeAddress = 0;
         this.messageLight = false;
         this.alarm = false;
         this.insertMode = false;
@@ -192,12 +240,15 @@ export class ScreenBuffer {
         this.queuedPointerAid = null;
         this.pointerMarker = null;
         this.pendingCursor = -1;
+        this.pendingInsertAddress = -1;
+        this.pendingMoveAddress = -1;
+        this.homeAddress = 0;
         this.sysreqMode = false;
         this.errorMode = false;
         this.errorHelpMode = false;
         this.activeAttr = DEFAULT_ATTR_DESC;
         this.extendedAttr = null;
-        this.soh = { resetMdt: false, errRow: 0, pfBytes: [0, 0, 0] };
+        this.soh = { cursorMoveToInput: false, resequence: 0, errRow: 0, pfBytes: [0, 0, 0] };
         // Clear Unit also wipes every active GUI construct - the host
         // is starting over with the screen, so windows/selections that
         // belonged to the previous panel don't carry over.
@@ -244,38 +295,100 @@ export class ScreenBuffer {
         }
     }
 
-    saveScreen () {
-        this.savedScreen = {
+    saveScreen (region = null) {
+        const saved = {
             cells: this.cells.map(c => ({ ...c })),
             fields: this.fields.map(f => ({
                 ...f,
                 fcws: f.fcws.map(pair => [...pair]),
             })),
             cursor: this.cursor,
+            writeAddress: this.writeAddress,
             pendingCursor: this.pendingCursor,
+            pendingInsertAddress: this.pendingInsertAddress,
+            pendingMoveAddress: this.pendingMoveAddress,
+            homeAddress: this.homeAddress,
             keyboardLocked: this.keyboardLocked,
             messageLight: this.messageLight,
+            alarm: this.alarm,
             insertMode: this.insertMode,
+            autoEnterRequested: this.autoEnterRequested,
+            pendingPointerAid: this.pendingPointerAid ? { ...this.pendingPointerAid } : null,
+            queuedPointerAid: this.queuedPointerAid ? { ...this.queuedPointerAid } : null,
+            pointerMarker: this.pointerMarker ? { ...this.pointerMarker } : null,
+            sysreqMode: !!this.sysreqMode,
+            errorMode: !!this.errorMode,
+            errorHelpMode: !!this.errorHelpMode,
             activeAttr: { ...this.activeAttr },
             extendedAttr: this.extendedAttr ? { ...this.extendedAttr } : null,
             soh: { ...this.soh, pfBytes: [...this.soh.pfBytes] },
             enptui: this.enptui.snapshot(),
+            rows: this.rows,
+            cols: this.cols,
+            region: region ? { ...region } : null,
         };
+        this.savedScreen = saved;
+
+        const id = this.nextSavedScreenId;
+        this.nextSavedScreenId = (id + 1) >>> 0;
+        if (this.nextSavedScreenId === 0) this.nextSavedScreenId = 1;
+        this.savedScreens.set(id, saved);
+        while (this.savedScreens.size > 32)
+            this.savedScreens.delete(this.savedScreens.keys().next().value);
+
+        return Uint8Array.of(
+            0x49, 0x54, 0x35, 0x32,
+            (id >>> 24) & 0xFF, (id >>> 16) & 0xFF,
+            (id >>> 8) & 0xFF, id & 0xFF,
+        );
     }
 
-    restoreScreen () {
-        const saved = this.savedScreen;
+    restoreScreen (token = null) {
+        const saved = token?.length
+            ? this.savedScreens.get(this.#savedScreenId(token))
+            : this.savedScreen;
         if (!saved) return false;
-        this.cells = saved.cells.map(o => Object.assign(new Cell(), o));
+        const previousCells = saved.region ? this.cells : null;
+        this.rows = saved.rows ?? this.rows;
+        this.cols = saved.cols ?? this.cols;
         this.fields = saved.fields.map(f => ({
             ...f,
             fcws: f.fcws.map(pair => [...pair]),
         }));
+        const fieldsByStart = new Map(this.fields.map(field => [field.start, field]));
+        const sourceCells = previousCells?.length === saved.cells.length
+            ? previousCells.map(c => ({ ...c }))
+            : saved.cells;
+        if (previousCells?.length === saved.cells.length) {
+            const { row, col, width, depth } = saved.region;
+            for (let r = 0; r < depth; r++) {
+                const start = (row - 1 + r) * this.cols + col - 1;
+                for (let c = 0; c < width; c++)
+                    sourceCells[start + c] = saved.cells[start + c];
+            }
+        }
+        this.cells = sourceCells.map(o => {
+            const cell = Object.assign(new Cell(), o);
+            if (o.field) cell.field = fieldsByStart.get(o.field.start) ?? null;
+            return cell;
+        });
         this.cursor = saved.cursor;
+        this.writeAddress = saved.writeAddress ?? saved.cursor;
         this.pendingCursor = saved.pendingCursor;
+        this.pendingInsertAddress = saved.pendingInsertAddress ?? -1;
+        this.pendingMoveAddress = saved.pendingMoveAddress ?? -1;
+        this.homeAddress = saved.homeAddress ?? 0;
         this.keyboardLocked = saved.keyboardLocked;
         this.messageLight = saved.messageLight;
+        this.alarm = saved.alarm ?? false;
         this.insertMode = saved.insertMode;
+        this.autoEnterRequested = saved.autoEnterRequested ?? false;
+        this.pendingPointerAid = saved.pendingPointerAid ? { ...saved.pendingPointerAid } : null;
+        this.queuedPointerAid = saved.queuedPointerAid ? { ...saved.queuedPointerAid } : null;
+        this.pointerMarker = saved.pointerMarker ? { ...saved.pointerMarker } : null;
+        this.sysreqMode = saved.sysreqMode ?? false;
+        this.errorMode = saved.errorMode ?? false;
+        this.errorHelpMode = saved.errorHelpMode ?? false;
         this.activeAttr = { ...saved.activeAttr };
         this.extendedAttr = saved.extendedAttr ? { ...saved.extendedAttr } : null;
         this.soh = { ...saved.soh, pfBytes: [...saved.soh.pfBytes] };
@@ -284,31 +397,32 @@ export class ScreenBuffer {
         return true;
     }
 
-    /** Record the latest SOH order's bookkeeping bits. The flag1 reset-
-     *  MDT bit is applied immediately; the PF mask + error row are
-     *  stashed for sendAid() and the renderer. */
+    #savedScreenId (token) {
+        if (token.length !== 8
+            || token[0] !== 0x49 || token[1] !== 0x54
+            || token[2] !== 0x35 || token[3] !== 0x32) return -1;
+        return ((token[4] << 24) | (token[5] << 16)
+            | (token[6] << 8) | token[7]) >>> 0;
+    }
+
+    /** Record the latest SOH order's bookkeeping bits. */
     startOfHeader (opts = {}) {
-        if (opts.resetMdt) this.resetMdtFlags();
         this.soh = {
-            resetMdt: !!opts.resetMdt,
+            cursorMoveToInput: !!opts.cursorMoveToInput,
+            resequence: opts.resequence ?? 0,
             errRow:   opts.errRow  ?? 0,
             pfBytes:  opts.pfBytes ?? [0x00, 0x00, 0x00],
         };
     }
 
-    /** Returns true when PFn (1..24) is enabled by the latest SOH
-     *  pf-mask. The wire bytes are DISABLE masks per the IBM 5250
-     *  reference (bit set ⇒ "no data included" for that PF, i.e. host
-     *  refuses the key). Layout:
-     *    pfBytes[0] = PF1 (0x80) … PF8 (0x01)
-     *    pfBytes[1] = PF9 (0x80) … PF16(0x01)
-     *    pfBytes[2] = PF17(0x80) … PF24(0x01)
-     *  Default when no SOH was seen: all-zero (= all keys enabled). */
-    isPfEnabled (n) {
-        if (n < 1 || n > 24) return true;
-        const byteIdx = ((n - 1) / 8) | 0;
-        const bit     = 7 - ((n - 1) % 8);
-        return (this.soh.pfBytes[byteIdx] & (1 << bit)) === 0;
+    /** SOH bytes 5-7 select PF keys whose response is cursor+AID only.
+     *  They do not disable the key. IBM stores PF24..17 in byte 5,
+     *  PF16..9 in byte 6 and PF8..1 in byte 7. */
+    isSohShortReadPf (n) {
+        if (n < 1 || n > 24) return false;
+        const byteIdx = 2 - (((n - 1) / 8) | 0);
+        const bit = (n - 1) % 8;
+        return (this.soh.pfBytes[byteIdx] & (1 << bit)) !== 0;
     }
 
     /** Apply a WEA (Write Extended Attribute) pair to the running pen.
@@ -326,20 +440,23 @@ export class ScreenBuffer {
      *  are non-display so we step over them defensively. */
     placeByte (b) {
         let skipped = 0;
-        while (this.cells[this.cursor].attributePlace && skipped < this.size) {
-            this.#advance();
+        while (this.writeAddress < this.size
+            && this.cells[this.writeAddress].attributePlace && skipped < this.size) {
+            this.#advanceWrite();
             skipped++;
         }
+        if (this.writeAddress < 0 || this.writeAddress >= this.size)
+            throw new RangeError('5250 write exceeds end of display');
         if (skipped >= this.size)
             throw new RangeError('5250 display contains no writable data position');
-        const cell = this.cells[this.cursor];
+        const cell = this.cells[this.writeAddress];
         cell.byte = b;
         cell.glyph = this.ebcdic.toChar(b);
         cell.attributePlace = false;
         cell.startField = false;
         cell.attr = this.activeAttr;          // running pen
         cell.extAttr = this.extendedAttr;     // inherit WEA pen, may be null
-        this.#advance();
+        this.#advanceWrite();
     }
 
     /** A 0x20-0x3F byte in the WTD stream marks an attribute place: the
@@ -355,7 +472,9 @@ export class ScreenBuffer {
      *  case where eager propagation would leave stale attr values on
      *  cells that should have inherited the SF's attribute byte). */
     placeAttribute (b) {
-        const cell = this.cells[this.cursor];
+        if (this.writeAddress < 0 || this.writeAddress >= this.size)
+            throw new RangeError('5250 attribute write exceeds end of display');
+        const cell = this.cells[this.writeAddress];
         const desc = ATTR_BASE[b] ?? DEFAULT_ATTR_DESC;
         cell.byte = b;
         cell.attributePlace = true;
@@ -368,20 +487,19 @@ export class ScreenBuffer {
         cell.extAttr = null;
         this.activeAttr   = desc;             // pen update
         this.extendedAttr = null;             // drop WEA pen
-        this.#advance();
+        this.#advanceWrite();
     }
 
     repeatToAddress (row, col, byte) {
         const target = this.#index(row, col);
+        if (target < this.writeAddress)
+            throw new RangeError('5250 RA target precedes current write address');
         const filler = byte & 0xFF;
         const fillGlyph = filler >= 0x40 ? this.ebcdic.toChar(filler) : ' ';
         const fillerIsAttr = isAttribute(filler);
         const fillerAttr   = fillerIsAttr ? (ATTR_BASE[filler] ?? DEFAULT_ATTR_DESC) : null;
 
-        let i = this.cursor;
-        const limit = this.size * 2;
-        for (let n = 0; n < limit; n++) {
-            if (i === target) break;
+        for (let i = this.writeAddress; i <= target; i++) {
             const cell = this.cells[i];
             if (fillerIsAttr) {
                 cell.byte = filler;
@@ -400,31 +518,64 @@ export class ScreenBuffer {
                 cell.glyph = fillGlyph;
                 cell.attr = this.activeAttr;       // inherit running pen
             }
-            i = (i + 1) % this.size;
         }
-        this.cursor = target;
+        this.writeAddress = target + 1;
     }
 
-    eraseToAddress (row, col) {
+    eraseToAddress (row, col, planes = [0x00]) {
         const target = this.#index(row, col);
-        let i = this.cursor;
-        const limit = this.size * 2;
-        for (let n = 0; n < limit; n++) {
-            if (i === target) break;
-            const cell = this.cells[i];
-            if (!cell.attributePlace) {
-                cell.byte = 0x00;
-                cell.glyph = ' ';
+        if (target < this.writeAddress)
+            throw new RangeError('5250 EA target precedes current write address');
+        const eraseDisplay = planes.some(plane => plane === 0x00 || plane === 0xFF);
+        if (eraseDisplay) {
+            for (let i = this.writeAddress; i <= target; i++) {
+                this.cells[i].reset();
             }
-            i = (i + 1) % this.size;
         }
-        this.cursor = target;
+        this.writeAddress = target + 1;
     }
 
-    setCursor (row, col) { this.cursor = this.#index(row, col); }
-    setPendingInsert (insertMode, row, col) {
-        this.pendingCursor = this.#index(row, col);
-        if (insertMode) this.insertMode = true;
+    setWriteAddress (row, col) { this.writeAddress = this.#index(row, col); }
+    setWriteAddressIndex (index) {
+        if (index < -1 || index >= this.size)
+            throw new RangeError(`Invalid 5250 write address ${index}`);
+        this.writeAddress = index;
+    }
+    // Compatibility alias retained for parser-era consumers.
+    setCursor (row, col) { this.setWriteAddress(row, col); }
+    setCursorBeforeStart () { this.writeAddress = -1; }
+    beginWriteToDisplay () {
+        this.pendingInsertAddress = -1;
+        this.pendingMoveAddress = -1;
+    }
+
+    setPendingInsert (insertCursor, row, col) {
+        const address = this.#index(row, col);
+        if (insertCursor) {
+            this.pendingInsertAddress = address;
+            this.homeAddress = address;
+        } else {
+            this.pendingMoveAddress = address;
+        }
+    }
+
+    applyWcc2Cursor (cc1) {
+        const retainCursor = (cc1 & 0x40) !== 0;
+        if (this.pendingMoveAddress >= 0) {
+            this.pendingCursor = this.pendingMoveAddress;
+        } else if (!retainCursor) {
+            this.pendingCursor = this.pendingInsertAddress >= 0
+                ? this.pendingInsertAddress
+                : (this.firstFocusable() ?? this.homeAddress);
+        }
+        this.pendingInsertAddress = -1;
+        this.pendingMoveAddress = -1;
+    }
+
+    homePosition () {
+        const field = this.fieldAt(this.homeAddress);
+        if (field && !field.bypass) return this.homeAddress;
+        return this.firstFocusable();
     }
 
     addField ({ attr, length, ffw0, ffw1, fcws }) {
@@ -441,27 +592,31 @@ export class ScreenBuffer {
         //
         // We follow the IBM convention: `length` is the count of data
         // cells exclusive of the leading attribute byte.
-        const start = this.cursor;
-        if (length < 0 || length >= this.size)
+        const start = this.writeAddress;
+        if (length <= 0 || length >= this.size || start + length >= this.size)
             throw new RangeError(`Invalid 5250 field length ${length}`);
+        if (!this.fields.some(existing => existing.start === start)
+            && this.fields.length >= 500)
+            throw new RangeError('5250 field-format table exceeds 500 fields');
         const desc  = ATTR_BASE[attr] ?? DEFAULT_ATTR_DESC;
         const field = new Field(start, { length, attr, ffw0, ffw1, fcws });
         this.fields = this.fields.filter(existing => existing.start !== start);
         this.fields.push(field);
         this.fields.sort((a, b) => a.start - b.start);
 
-        const attrCell = this.cells[start];
-        attrCell.byte = attr;
-        attrCell.attributePlace = true;
-        attrCell.startField = true;
-        attrCell.attr = desc;
-        attrCell.glyph = ' ';
-        // Tag the attr cell with the field reference too. fieldAt()
-        // still uses the `idx > f.start` test so the attr cell isn't
-        // considered "inside" the field for input purposes, but
-        // recalcAttributes() needs cell.field to identify SF starts
-        // and skip past the field's data cells.
-        attrCell.field = field;
+        if (start >= 0) {
+            const attrCell = this.cells[start];
+            attrCell.byte = attr;
+            attrCell.attributePlace = true;
+            attrCell.startField = true;
+            attrCell.attr = desc;
+            attrCell.glyph = ' ';
+            // Tag the attr cell with the field reference too. fieldAt()
+            // still uses the `idx > f.start` test so the attr cell isn't
+            // considered "inside" the field for input purposes, but
+            // recalcAttributes() needs cell.field to identify SF starts.
+            attrCell.field = field;
+        }
 
         // Force-overwrite every data cell that belongs to this field.
         // The host can re-WTD without a Clear Unit in between, leaving
@@ -480,17 +635,21 @@ export class ScreenBuffer {
         }
 
         this.activeAttr = desc;
-        this.#advance();
+        this.#advanceWrite();
     }
 
-    resetMdtFlags () {
-        for (const f of this.fields) f.modified = false;
-        for (const construct of this.enptui.all) construct.modified = false;
-    }
-
-    nullModifiedFields () {
+    resetMdtFlags (nonBypassOnly = false) {
         for (const f of this.fields) {
-            if (!f.modified || f.bypass) continue;
+            if (!nonBypassOnly || !f.bypass) f.modified = false;
+        }
+        if (!nonBypassOnly) {
+            for (const construct of this.enptui.all) construct.modified = false;
+        }
+    }
+
+    clearNonBypassFields (modifiedOnly = false) {
+        for (const f of this.fields) {
+            if (f.bypass || (modifiedOnly && !f.modified)) continue;
             // Iterate the field's `f.length` data cells (data starts at
             // f.start + 1 and runs for f.length positions).
             for (let n = 1; n <= f.length; n++) {
@@ -500,6 +659,9 @@ export class ScreenBuffer {
                 cell.byte = 0x00;
                 cell.glyph = ' ';
             }
+            // IBM eraseField() raises MDT. WCC1 combinations which also
+            // reset MDT do so in the following operation.
+            f.modified = true;
         }
     }
 
@@ -564,6 +726,10 @@ export class ScreenBuffer {
                 `field.start=${f.start} field.length=${f.length} ffw0=0x${f.ffw0.toString(16)}`);
             return false;
         }
+        if (f.ioOnly) {
+            this.alarm = true;
+            return false;
+        }
         if (cell.attributePlace) {
             debug.warn(`typeByte FAIL at idx=${here} (r${r},c${c}): cell is attributePlace; ` +
                 `field.start=${f.start} field.length=${f.length}`);
@@ -593,8 +759,9 @@ export class ScreenBuffer {
 
         if (this.insertMode) {
             const offset = (here - f.start + this.size) % this.size;
-            const remaining = f.length - offset + 1;
-            const last = (f.start + f.length) % this.size;
+            const dataLength = f.length - (f.signedNumeric ? 1 : 0);
+            const remaining = dataLength - offset + 1;
+            const last = (f.start + dataLength) % this.size;
             if (this.cells[last].byte !== 0x00) {
                 this.alarm = true;
                 return false;
@@ -614,7 +781,7 @@ export class ScreenBuffer {
         // anyway.
         f.modified = true;
         if (f.fer) f.exited = false;
-        const lastData = (f.start + f.length) % this.size;
+        const lastData = (f.start + f.length - (f.signedNumeric ? 1 : 0)) % this.size;
         if (here === lastData) {
             if (f.autoEnter) this.autoEnterRequested = true;
             else {
@@ -686,6 +853,80 @@ export class ScreenBuffer {
             const next = this.nextInputAfter(field.start);
             if (next) this.cursor = (next.start + 1) % this.size;
         }
+        return true;
+    }
+
+    toggleInsertMode () {
+        if (this.keyboardLocked) return false;
+        this.insertMode = !this.insertMode;
+        return true;
+    }
+
+    deleteChar () {
+        if (this.keyboardLocked) return false;
+        const field = this.fieldAt(this.cursor);
+        if (!field || field.bypass || field.ioOnly) {
+            this.alarm = true;
+            return false;
+        }
+        const end = (field.start + field.length - (field.signedNumeric ? 1 : 0)) % this.size;
+        let pos = this.cursor;
+        while (pos !== end) {
+            const next = (pos + 1) % this.size;
+            this.cells[pos].byte = this.cells[next].byte;
+            this.cells[pos].glyph = this.cells[next].glyph;
+            pos = next;
+        }
+        this.cells[end].byte = 0x00;
+        this.cells[end].glyph = ' ';
+        field.modified = true;
+        if (field.fer) field.exited = false;
+        return true;
+    }
+
+    eraseToEndOfField () {
+        if (this.keyboardLocked) return false;
+        const field = this.fieldAt(this.cursor);
+        if (!field || field.bypass || field.ioOnly) {
+            this.alarm = true;
+            return false;
+        }
+        const end = (field.start + field.length) % this.size;
+        let pos = this.cursor;
+        while (true) {
+            this.cells[pos].byte = 0x00;
+            this.cells[pos].glyph = ' ';
+            if (pos === end) break;
+            pos = (pos + 1) % this.size;
+        }
+        field.modified = true;
+        if (field.fer) field.exited = false;
+        return true;
+    }
+
+    eraseInput () {
+        if (this.keyboardLocked) return false;
+        this.clearNonBypassFields(true);
+        const home = this.firstFocusable();
+        if (home !== null) this.cursor = home;
+        return true;
+    }
+
+    fieldSignExit (negative) {
+        if (this.keyboardLocked) return false;
+        const field = this.fieldAt(this.cursor);
+        if (!field || !field.signedNumeric || field.bypass) {
+            this.alarm = true;
+            return false;
+        }
+        this.eraseToEndOfField();
+        const sign = (field.start + field.length) % this.size;
+        this.cells[sign].byte = negative ? EBC_MINUS : 0x00;
+        this.cells[sign].glyph = negative ? '-' : ' ';
+        field.modified = true;
+        field.exited = true;
+        const next = this.nextInputAfter(field.start);
+        if (next) this.cursor = (next.start + 1) % this.size;
         return true;
     }
 
@@ -828,6 +1069,7 @@ export class ScreenBuffer {
     // ---- internals -----------------------------------------------------
 
     #advance () { this.cursor = (this.cursor + 1) % this.size; }
+    #advanceWrite () { this.writeAddress++; }
 
     /** Convert a valid 1-based wire address into a buffer index. */
     #index (row, col) {
@@ -861,6 +1103,16 @@ export class ScreenBuffer {
     recalcAttributes () {
         let active = DEFAULT_ATTR_DESC;
         let i = 0;
+        // SBA(1,0)+SF creates a virtual attribute place immediately
+        // before cell zero. Apply its field attribute without consuming
+        // the real last cell of the presentation space.
+        const virtual = this.fields.find(field => field.start === -1);
+        if (virtual) {
+            const desc = ATTR_BASE[virtual.attr] ?? DEFAULT_ATTR_DESC;
+            for (let j = 0; j < virtual.length && j < this.size; j++)
+                this.cells[j].attr = desc;
+            i = Math.min(virtual.length, this.size);
+        }
         while (i < this.size) {
             const cell = this.cells[i];
             if (cell.attributePlace) {

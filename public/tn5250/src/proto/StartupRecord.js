@@ -8,6 +8,7 @@ const RESPONSE_MESSAGES = Object.freeze({
     I902: 'session successfully started',
     I906: 'automatic sign-on unavailable; sign-on screen will follow',
     I904: 'source system is at an incompatible release',
+    '8901': 'requested device is not varied on',
     '8902': 'requested device is already in use',
     '8937': 'automatic sign-on rejected',
     '8940': 'automatic device configuration failed or is not allowed',

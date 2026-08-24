@@ -16,7 +16,7 @@ import { InboundParser } from './proto/InboundParser.js';
 import { OutboundBuilder } from './proto/OutboundBuilder.js';
 import { decodeStartupRecord } from './proto/StartupRecord.js';
 import * as Gds from './proto/GdsHeader.js';
-import { Aid, Models, Gds as GdsConsts, NegResp } from './proto/Constants.js';
+import { Aid, Cmd, Models, Gds as GdsConsts, NegResp } from './proto/Constants.js';
 
 // Map an AID byte back to its PF number, or null when it's not a PF.
 function pfNumberFor (aid) {
@@ -42,13 +42,17 @@ export class Terminal {
         this.statusEl = statusEl;
         this.statusRevision = 0;
         this.onConnectionState = onConnectionState ?? (() => {});
+        this.disconnectContext = '';
 
         this.modelKey = modelKey;
         this.codePage = codePage;
         const m = Models[modelKey];
         this.screen   = new ScreenBuffer(m.rows, m.cols, Ebcdic.get(codePage));
+        this.screen.configureGeometry({ alternateRows: m.rows, alternateCols: m.cols });
         this.renderer = new Renderer(canvas, this.screen);
-        this.parser   = new InboundParser(this.screen);
+        this.parser   = new InboundParser(this.screen, {
+            onGeometryChange: () => this.renderer.resize(),
+        });
         this.builder  = new OutboundBuilder(this.screen);
         this.transport = null;
         this.telnet    = null;
@@ -66,12 +70,18 @@ export class Terminal {
             onAid:        (aid) => this.sendAid(aid),
             onType:       (s)   => this.type(s),
             onBackspace:  ()    => { this.screen.backspace(); this.draw(); },
+            onDelete:     ()    => { this.screen.deleteChar(); this.draw(); },
+            onEraseEof:   ()    => { this.screen.eraseToEndOfField(); this.draw(); },
+            onEraseInput: ()    => { this.screen.eraseInput(); this.draw(); },
+            onInsert:     ()    => { this.screen.toggleInsertMode(); this.draw(); },
             onTab:        ()    => { this.screen.tab(); this.draw(); },
             onBackTab:    ()    => { this.screen.backTab(); this.draw(); },
             onMoveCursor: (i)   => { this.screen.cursor = i; this.draw(); },
             onFlash:      (msg) => this.flashStatus(msg),
             onSystemRequest: () => this.sendSystemRequest(),
             onFieldExit:   ()    => this.fieldExit(),
+            onFieldPlus:   ()    => { this.screen.fieldSignExit(false); this.draw(); },
+            onFieldMinus:  ()    => { this.screen.fieldSignExit(true); this.draw(); },
         });
 
         window.addEventListener('resize', () => this.renderer.resize());
@@ -152,6 +162,7 @@ export class Terminal {
         const m = Models[key];
         if (!m) return;
         this.modelKey = key;
+        this.screen.configureGeometry({ alternateRows: m.rows, alternateCols: m.cols });
         this.screen.resize(m.rows, m.cols);
         this.renderer.resize();
         this.draw();
@@ -168,7 +179,9 @@ export class Terminal {
 
     async connect ({ url }) {
         if (this.transport) await this.disconnect();
+        this.disconnectContext = '';
         const m = Models[this.modelKey];
+        this.screen.configureGeometry({ alternateRows: m.rows, alternateCols: m.cols });
         this.screen.resize(m.rows, m.cols);
         this.renderer.resize();
         this.draw();
@@ -199,7 +212,11 @@ export class Terminal {
             },
             onData:  (b) => this.telnet?.feed(b),
             onClose: (reason) => {
-                this.setStatus(`disconnected: ${reason}`, 'disconnected');
+                const context = this.disconnectContext;
+                this.setStatus(context
+                    ? `disconnected · ${context}`
+                    : `disconnected: ${reason}`,
+                context ? 'error' : 'disconnected');
                 this.oia.setConnection('disconnected');
                 this.cleanup();
                 this.onConnectionState('disconnected');
@@ -222,6 +239,7 @@ export class Terminal {
 
     async disconnect () {
         if (!this.transport) return;
+        this.disconnectContext = '';
         this.transport.close();
         this.cleanup();
         this.setStatus('disconnected', 'disconnected');
@@ -278,6 +296,7 @@ export class Terminal {
         // through #process() would crash on the first non-ESC byte.
         if (miscFlags1 === 0x80 || miscFlags1 === 0x90 || miscFlags1 === 0x40) {
             if (miscFlags1 === 0x40) {
+                this.disconnectContext = 'session terminated by host';
                 this.setStatus('session terminated by host', 'disconnected');
                 this.oia.setSystem('END');
                 return;
@@ -286,16 +305,20 @@ export class Terminal {
             this.telnet?.env.clearSensitive();
             if (!startup) {
                 debug.warn('malformed RFC 4777 startup response');
+                this.disconnectContext = 'unrecognised startup response';
                 this.setStatus('connected · unrecognised startup response', 'error');
                 return;
             }
             this.oia.setSystem(startup.system || 'SYS');
             if (startup.device) this.oia.setModel(startup.device);
             const target = [startup.system, startup.device].filter(Boolean).join('/');
-            this.setStatus(
-                `${startup.success ? 'connected' : 'startup error'} · ${startup.code}`
-                    + (target ? ` · ${target}` : '')
-                    + ` · ${startup.message}`,
+            const startupStatus = `${startup.success ? 'connected' : 'startup error'} · ${startup.code}`
+                + (target ? ` · ${target}` : '')
+                + ` · ${startup.message}`;
+            this.disconnectContext = startup.success
+                ? ''
+                : `${startup.code}${target ? ` · ${target}` : ''} · ${startup.message}`;
+            this.setStatus(startupStatus,
                 startup.success ? 'connected' : 'error');
             return;
         }
@@ -311,9 +334,15 @@ export class Terminal {
                 // us to unlock and wait for an AID-bearing reply. This
                 // matches the IBM 5250 invite-for-input semantics.
                 if (!this.#processPayload(payload)) return;
-                this.parser.readPending = true;
-                this.parser.invited     = true;
-                this.screen.unlockKeyboard();
+                if (!this.parser.readImmediateRequested
+                    && !this.parser.readScreenRequested
+                    && !this.parser.queryRequested
+                    && !this.parser.queryStationStateRequested
+                    && !this.parser.saveScreenRequested) {
+                    this.parser.readPending = true;
+                    this.parser.invited     = true;
+                    this.screen.unlockKeyboard();
+                }
                 break;
             case GdsConsts.Op.OUTPUT_ONLY:
                 if (!this.#processPayload(payload)) return;
@@ -323,18 +352,27 @@ export class Terminal {
                     this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
                     return;
                 }
-                this.screen.saveScreen();
-                this.#sendOpcode(GdsConsts.Op.SAVE_SCREEN,
-                    this.builder.buildSaveScreenResponse());
+                {
+                    const token = this.screen.saveScreen();
+                    this.#sendOpcode(GdsConsts.Op.SAVE_SCREEN,
+                        this.builder.buildSaveScreenResponse(token));
+                }
                 return;
             case GdsConsts.Op.RESTORE_SCREEN:
                 if (!this.#isScreenControlPayload(payload, 0x12, true)) {
                     this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
                     return;
                 }
-                if (!this.screen.restoreScreen()) {
-                    this.#sendNegativeResponse(NegResp.STATE_ERROR);
-                    return;
+                {
+                    const rows = this.screen.rows;
+                    const cols = this.screen.cols;
+                    const token = payload.subarray(2);
+                    if (!this.screen.restoreScreen(token.length ? token : null)) {
+                        this.#sendNegativeResponse(NegResp.STATE_ERROR);
+                        return;
+                    }
+                    if (rows !== this.screen.rows || cols !== this.screen.cols)
+                        this.renderer.resize();
                 }
                 this.oia.setSystem('SYS');
                 this.draw();
@@ -366,6 +404,13 @@ export class Terminal {
                 break;
         }
 
+        if (this.parser.saveScreenRequested) {
+            const request = this.parser.saveScreenRequested;
+            this.parser.saveScreenRequested = null;
+            this.#sendOpcode(opcode, this.builder.buildSaveScreenResponse(
+                request.token, { partial: request.partial }));
+        }
+
         // Query → answer with our capability descriptor.
         if (this.parser.queryRequested) {
             this.parser.queryRequested = false;
@@ -386,14 +431,23 @@ export class Terminal {
 
         // Read Screen Immediate / To Print → dump the screen back.
         if (this.parser.readScreenRequested) {
+            const readCommand = this.parser.readScreenRequested;
             this.parser.readScreenRequested = false;
-            this.#sendOpcode(GdsConsts.Op.NO_OPERATION, this.builder.buildReadScreenResponse());
+            const withEa = readCommand === Cmd.READ_SCREEN_WITH_EA
+                || readCommand === Cmd.READ_SCREEN_TO_PRINT_WITH_EA
+                || readCommand === Cmd.READ_SCREEN_TO_PRINT_WITH_GRID_EA;
+            this.#sendOpcode(GdsConsts.Op.NO_OPERATION, withEa
+                ? this.builder.buildReadScreenWithExtendedAttributes()
+                : this.builder.buildReadScreenResponse());
         }
 
         if (this.parser.readImmediateRequested) {
             this.parser.readImmediateRequested = false;
             this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
-                this.builder.buildReadResponse({ aid: 0x00, preserveNulls: true }));
+                this.builder.buildReadResponse({
+                    aid: 0x00,
+                    includeAll: this.parser.readType === Cmd.READ_IMMEDIATE,
+                }));
         }
 
         if (this.screen.pendingCursor >= 0) {
@@ -425,8 +479,11 @@ export class Terminal {
             return true;
         } catch (err) {
             debug.warn('parser error:', err);
+            this.parser.clearTransientRequests();
             if (err?.negativeResponse)
-                this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
+                this.#sendNegativeResponse(err.stateError
+                    ? NegResp.STATE_ERROR
+                    : NegResp.REQUEST_ERROR);
             return false;
         }
     }
@@ -458,17 +515,7 @@ export class Terminal {
             this.draw();
             return;
         }
-        // Honour the SOH pf-enable mask: refuse to transmit when the
-        // host explicitly disabled the requested PF (real 5250 hardware
-        // beeps and ignores). Help / Print / Clear / roll / Enter are
-        // not part of the mask and always pass through.
         const pf = pfNumberFor(aidByte);
-        if (pf !== null && !this.screen.isPfEnabled(pf)) {
-            this.flashStatus(`PF${pf} disabled by host`, 'error');
-            this.screen.alarm = true;
-            this.draw();
-            return;
-        }
         const shortAid = aidByte === Aid.HELP || aidByte === Aid.CLEAR
             || aidByte === Aid.PRINT || aidByte === Aid.ROLL_UP
             || aidByte === Aid.ROLL_DOWN || aidByte === Aid.ROLL_LEFT
@@ -494,6 +541,7 @@ export class Terminal {
                          this.builder.buildAidResponse(aidByte, {
                              includeAll: this.parser.readType === 0x42,
                              preserveNulls: this.parser.readType === 0x83,
+                             shortRead: pf !== null && this.screen.isSohShortReadPf(pf),
                          }));
         this.screen.keyboardLocked = true;
         this.parser.readPending = false;

@@ -52,9 +52,11 @@
     </select>
     <select id="codePage" title="EBCDIC code page (IBM i native)">
         <option value="CP037" selected>CP037 - US English</option>
+        <option value="CP500">CP500 - International Latin-1</option>
+        <option value="CP1141">CP1141 - German with euro</option>
     </select>
-    <input id="devname" type="text" placeholder="device" maxlength="10"
-           title="DEVNAME (RFC 4777) - workstation name negotiated with the IBM i">
+    <input id="devname" type="text" placeholder="device (optional)" maxlength="10"
+           title="Optional DEVNAME (RFC 4777). Leave empty so the IBM i allocates an available device.">
     <input id="user" type="text" placeholder="USER (optional)" autocomplete="off"
            title="Optional bypass-signon user profile (RFC 4777). Leave empty to see the standard signon screen.">
     <input id="password" type="password" placeholder="password (optional)" autocomplete="off"

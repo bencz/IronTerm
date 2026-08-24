@@ -288,6 +288,7 @@ test('horizontal grid records do not require the unused height byte', () => {
 test('WRITE_DATA clears stale tail bytes and preserves the field MDT', () => {
   const screen = new ScreenBuffer(24, 80);
   screen.cursor = 160;
+  screen.setWriteAddressIndex(160);
   screen.addField({ attr: 0x20, length: 4, ffw0: 0, ffw1: 0, fcws: [] });
   screen.cursor = 160;
   for (let i = 161; i <= 164; i++) {

@@ -75,13 +75,15 @@ function main () {
         terminal.setModel(modelEl.value);
         // Build the env-options payload for NEW-ENVIRON.
         const envOptions = {
-            devName:  devnameEl.value.trim() || 'IRONTERM',
             kbdType:  'USB',
-            codePage: codePageEl.value === 'CP1141' ? '1141'
-                      : codePageEl.value === 'CP500'  ? '500'
-                      : '037',
+            codePage: codePageEl.value.replace(/^CP/, ''),
             charset:  '697',
         };
+        // An empty DEVNAME asks the host to allocate an available device.
+        // Inventing a fixed name here makes concurrent sessions collide and
+        // can select an existing device that is not varied on.
+        if (devnameEl.value.trim())
+            envOptions.devName = devnameEl.value.trim().toUpperCase();
         if (userEl.value.trim())     envOptions.user     = userEl.value.trim().toUpperCase();
         if (hasPassword)             envOptions.password = passwordEl.value;
         terminal.setEnvOptions(envOptions);

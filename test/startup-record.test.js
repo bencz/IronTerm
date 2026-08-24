@@ -26,3 +26,13 @@ test('decodes automatic sign-on rejection without treating it as success', () =>
   assert.equal(result.success, false);
   assert.match(result.message, /sign-on rejected/);
 });
+
+test('reports a device that is not varied on', () => {
+  const cp = Ebcdic.get('CP037');
+  const payload = new Uint8Array(27);
+  payload.set(cp.encode('8901'), 5);
+  payload.set(cp.encode('PUB400  '), 9);
+  const result = decodeStartupRecord(payload, cp);
+  assert.equal(result.success, false);
+  assert.match(result.message, /not varied on/);
+});

@@ -72,8 +72,10 @@ export const Gds = Object.freeze({
 // ---- 5250 commands (inside an opcode 0x01/0x02/0x03 record payload) ---
 export const Cmd = Object.freeze({
     SAVE_SCREEN:                 0x02,
+    SAVE_PARTIAL_SCREEN:         0x03,
     WRITE_TO_DISPLAY:            0x11,
     RESTORE_SCREEN:              0x12,
+    RESTORE_PARTIAL_SCREEN:      0x13,
     CLEAR_UNIT_ALT:              0x20,
     WRITE_ERROR_CODE:            0x21,
     WRITE_ERROR_CODE_TO_WINDOW:  0x22,
@@ -83,9 +85,16 @@ export const Cmd = Object.freeze({
     CLEAR_FORMAT_TABLE:          0x50,
     READ_MDT_FIELDS:             0x52,
     READ_SCREEN_IMMEDIATE:       0x62,
+    READ_SCREEN_WITH_EA:         0x64,
     READ_SCREEN_TO_PRINT:        0x66,
+    READ_SCREEN_TO_PRINT_WITH_EA: 0x68,
+    READ_SCREEN_TO_PRINT_WITH_GRID: 0x6A,
+    READ_SCREEN_TO_PRINT_WITH_GRID_EA: 0x6C,
+    READ_IMMEDIATE:              0x72,
+    READ_MDT_ALT:                0x82,
     READ_MDT_IMMEDIATE_ALT:      0x83,
     WRITE_STRUCTURED_FIELD:      0xF3,
+    TRUE_TRANSPARENCY_WRITE:     0xF4,
 });
 
 // ---- 5250 WTD orders (within a Write-To-Display payload) -------------
@@ -225,14 +234,14 @@ export const Adjust = Object.freeze({
 });
 
 export const Shift = Object.freeze({
-    DATA_ALL:        0x0,
-    DATA_X:          0x1,   // alpha-only
-    DATA_A:          0x2,   // alpha-shift
-    DATA_N:          0x3,   // numeric-shift
-    DATA_S:          0x4,   // numeric-only
-    DATA_DIGITS:     0x5,
-    DATA_DBCS:       0x6,
-    DATA_SIGNED_N:   0x7,
+    ALPHA_SHIFT:     0x0,
+    ALPHA_ONLY:      0x1,
+    NUMERIC_SHIFT:   0x2,
+    NUMERIC_ONLY:    0x3,
+    KANA_SHIFT:      0x4,   // also BIDI right-to-left in those sessions
+    DIGITS_ONLY:     0x5,
+    IO_ONLY:         0x6,
+    SIGNED_NUMERIC:  0x7,
 });
 
 // ---- AID-generating keys (RFC 1205 §5.4) -----------------------------
