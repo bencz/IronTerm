@@ -189,7 +189,7 @@ only the wire protocol and the datastream parser are separate.
 It's tagged **beta** because it has had less mileage on real hardware
 than the 3270 side. Signon, WTD, input fields and AID keys work against
 pub400 and IBM i 7.x. The ENPTUI implementation is checked against the
-open IBM Host On-Demand/ACS classes, but uncommon host combinations still
+open IBM Host On-Demand, but uncommon host combinations still
 need end-to-end coverage. Please file issues with a screenshot and host.
 
 **Telnet / TN5250E (RFC 1205, RFC 4777):**
