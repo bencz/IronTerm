@@ -273,17 +273,18 @@ HiDPI/Retina displays.
 
 ## Development and verification
 
-Node.js 20 or newer is used only for validation; the application remains
-build-free in the browser:
+The application remains build-free in the browser. Node.js 20 or newer is
+used for validation and by the dependency-free static server used on Railway:
 
 ```sh
+npm start
 npm run check
 npm test
 ```
 
-The container image uses the official, version-pinned nginx image, serves on
-port 8080, includes a health check, and sends baseline browser security
-headers:
+On Railway, `npm start` listens on the platform-provided `PORT`. The optional
+container image runs the same Node.js static server and sends the same baseline
+browser security headers; nginx is not required:
 
 ```sh
 docker build -t ironterm .

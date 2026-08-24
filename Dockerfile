@@ -1,10 +1,16 @@
-FROM nginx:1.28.3-alpine3.23-slim
+FROM node:22-alpine
 
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY public/ /usr/share/nginx/html/
+WORKDIR /app
 
-ENV PORT=8080
+ENV NODE_ENV=production \
+    PORT=8080
+
+COPY --chown=node:node package.json ./
+COPY --chown=node:node server/ ./server/
+COPY --chown=node:node public/ ./public/
+
+USER node
+
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:${PORT}/ || exit 1
+CMD ["npm", "start"]

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node server/static-server.js",
     "check": "node scripts/check-js.js",
     "test": "node --test"
   },

@@ -12,7 +12,9 @@ async function collect (dir) {
   return out;
 }
 
-for (const file of await collect('public')) {
-  const result = spawnSync(process.execPath, ['--check', file], { stdio: 'inherit' });
-  if (result.status !== 0) process.exit(result.status ?? 1);
+for (const root of ['public', 'server']) {
+  for (const file of await collect(root)) {
+    const result = spawnSync(process.execPath, ['--check', file], { stdio: 'inherit' });
+    if (result.status !== 0) process.exit(result.status ?? 1);
+  }
 }
