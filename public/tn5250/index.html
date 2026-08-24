@@ -58,7 +58,7 @@
     <input id="user" type="text" placeholder="USER (optional)" autocomplete="off"
            title="Optional bypass-signon user profile (RFC 4777). Leave empty to see the standard signon screen.">
     <input id="password" type="password" placeholder="password (optional)" autocomplete="off"
-           title="Optional bypass-signon password. Will be sent only when USER is filled. Cleared on connect.">
+           title="Optional RFC 4777 plaintext bypass-signon password. Requires WSS and a trusted relay; cleared from the form on connect.">
     <button id="connect">Connect</button>
     <button id="disconnect" disabled>Disconnect</button>
 
@@ -80,9 +80,11 @@
         <button data-aid="PF10">PF10</button>
         <button data-aid="PF11">PF11</button>
         <button data-aid="PF12">PF12</button>
+        <button id="attnBtn" type="button">Attn</button>
+        <button id="sysreqBtn" type="button" title="Shift+Escape">SysReq</button>
     </div>
 
-    <span class="hint" title="F1-F12 = PF1-12, Shift+F1-F12 = PF13-24, PgUp/PgDn = Roll">F#·Shift+F#·PgUp/Dn</span>
+    <span class="hint" title="F1-F12 = PF1-12, Shift+F1-F12 = PF13-24, PgUp/PgDn = Roll, Shift+Esc = System Request">F#·Shift+F#·PgUp/Dn·Shift+Esc</span>
     <span id="status">disconnected</span>
 </div>
 

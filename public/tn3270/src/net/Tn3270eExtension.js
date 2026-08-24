@@ -22,8 +22,8 @@ export class Tn3270eExtension {
         // Sub-option byte advertised by the host as DO 0x28.
         this.OPTION = TelnetOption.TN3270E;
 
-        // Per-record outbound sequence number (RFC 2355 §3.2: unique,
-        // monotonically increasing, wraps at 0xFFFF).
+        // Per-record outbound sequence number (RFC 2355 §10.4: first zero,
+        // range 0..32767, then restart at zero).
         this.outboundSeq = 0;
 
         // Negotiated state mirrored into core.state so listeners only
@@ -31,6 +31,9 @@ export class Tn3270eExtension {
         this.tn3270e    = false;
         this.deviceType = '';
         this.functions  = [];
+        this.optionAgreed = false;
+        this.deviceNegotiated = false;
+        this.supportedFunctions = Object.freeze([Tn3270e.FN_RESPONSES]);
     }
 
     attach (core) {
@@ -44,16 +47,26 @@ export class Tn3270eExtension {
         return opt === this.OPTION;
     }
 
-    onOptionEnabled (opt) {
-        if (opt === this.OPTION) {
-            this.tn3270e = true;
-            this.core.setState({ tn3270e: true });
+    onOptionEnabled (opt, direction) {
+        if (opt === this.OPTION && direction === 'local') {
+            this.optionAgreed = true;
+            this.core.setImpliedBidirectionalOption(TelnetOption.BINARY, true);
+            this.core.setImpliedBidirectionalOption(TelnetOption.EOR, true);
+            this.core.setState({ tn3270e: false, tn3270eNegotiating: true });
         }
     }
-    onOptionDisabled (opt) {
+    onOptionDisabled (opt, direction) {
         if (opt === this.OPTION) {
+            if (direction === 'local') this.optionAgreed = false;
+            if (direction === 'local') {
+                this.core.setImpliedBidirectionalOption(TelnetOption.BINARY, false);
+                this.core.setImpliedBidirectionalOption(TelnetOption.EOR, false);
+            }
             this.tn3270e = false;
-            this.core.setState({ tn3270e: false });
+            this.deviceNegotiated = false;
+            this.functions = [];
+            this.core.setState({ tn3270e: false, tn3270eNegotiating: false,
+                                 deviceType: '', functions: [] });
         }
     }
 
@@ -63,8 +76,8 @@ export class Tn3270eExtension {
     wrapOutbound (record) {
         if (!this.tn3270e) return record;
 
-        this.outboundSeq = (this.outboundSeq + 1) & 0xFFFF;
         const seq = this.outboundSeq;
+        this.outboundSeq = (this.outboundSeq + 1) & 0x7FFF;
         const out = new Uint8Array(TnHeader.LENGTH + record.length);
         out[0] = TnHeader.TYPE_3270_DATA;
         out[1] = 0x00;                        // request-flag
@@ -126,10 +139,13 @@ export class Tn3270eExtension {
                 if (data[i] === 0x01) { sep = i; break; }
             const end = sep === -1 ? data.length : sep;
             this.deviceType = asciiDecode(data.slice(3, end));
+            this.deviceNegotiated = true;
             this.core.setState({ deviceType: this.deviceType });
 
-            // Request the standard function set: BIND-IMAGE, RESPONSES, SYSREQ.
-            const fns = [Tn3270e.FN_BIND_IMAGE, Tn3270e.FN_RESPONSES, Tn3270e.FN_SYSREQ];
+            // Advertise only functions implemented end-to-end. Claiming
+            // BIND-IMAGE or SYSREQ obligates us to implement additional
+            // data-types and state transitions, so those remain off.
+            const fns = this.supportedFunctions;
             const out = new Uint8Array(5 + fns.length + 2);
             let p = 0;
             out[p++] = Telnet.IAC; out[p++] = Telnet.SB;
@@ -145,24 +161,49 @@ export class Tn3270eExtension {
         // Host: FUNCTIONS REQUEST <list> - host counter-proposed; accept
         // its list verbatim by echoing as IS.
         if (op === Tn3270e.FUNCTIONS && subOp === Tn3270e.REQUEST) {
-            const out = new Uint8Array(data.length + 4);
+            const requested = Array.from(data.slice(3));
+            const accepted = requested.filter(fn => this.supportedFunctions.includes(fn));
+            const exact = accepted.length === requested.length;
+            const out = new Uint8Array(5 + accepted.length + 2);
             let p = 0;
             out[p++] = Telnet.IAC; out[p++] = Telnet.SB;
-            out.set(data, p); p += data.length;
-            out[2 + 2] = Tn3270e.IS;            // overwrite the REQUEST sub-op
+            out[p++] = TelnetOption.TN3270E;
+            out[p++] = Tn3270e.FUNCTIONS;
+            out[p++] = exact ? Tn3270e.IS : Tn3270e.REQUEST;
+            for (const fn of accepted) out[p++] = fn;
             out[p++] = Telnet.IAC; out[p++] = Telnet.SE;
             this.core.send(out);
-            this.functions = Array.from(data.slice(3));
-            this.core.setState({ functions: this.functions });
+            if (exact) this.#activate(accepted);
             return;
         }
 
         // Host: FUNCTIONS IS <list> - agreement; nothing to do but record.
         if (op === Tn3270e.FUNCTIONS && subOp === Tn3270e.IS) {
-            this.functions = Array.from(data.slice(3));
-            this.core.setState({ functions: this.functions });
+            const agreed = Array.from(data.slice(3));
+            if (agreed.every(fn => this.supportedFunctions.includes(fn)))
+                this.#activate(agreed);
+            else
+                this.core.setState({ tn3270eError: 'server accepted unsupported TN3270E functions' });
             return;
         }
+
+        if (op === Tn3270e.DEVICE_TYPE && subOp === Tn3270e.REJECT) {
+            const reasonAt = data.indexOf(Tn3270e.REASON, 3);
+            const reason = reasonAt >= 0 ? data[reasonAt + 1] : Tn3270e.REASON;
+            this.deviceNegotiated = false;
+            this.core.setState({ tn3270e: false, tn3270eNegotiating: false,
+                                 tn3270eError: `device type rejected (reason ${reason ?? 'unknown'})` });
+            return;
+        }
+    }
+
+    #activate (functions) {
+        if (!this.optionAgreed || !this.deviceNegotiated) return;
+        this.functions = [...functions];
+        this.tn3270e = true;
+        this.outboundSeq = 0;
+        this.core.setState({ tn3270e: true, tn3270eNegotiating: false,
+                             functions: this.functions, tn3270eError: '' });
     }
 
     // ---- response records ---------------------------------------------
@@ -170,15 +211,15 @@ export class Tn3270eExtension {
     /** Echo a successful record with an empty body. Caller picks the
      *  right time (after parsing succeeded) and passes the host's seq. */
     sendPositiveResponse (seq) {
-        const out = new Uint8Array(7);
+        if (!this.tn3270e || !this.functions.includes(Tn3270e.FN_RESPONSES)) return;
+        const out = new Uint8Array(6);
         out[0] = TnHeader.TYPE_RESPONSE;
         out[1] = 0x00;        // POSITIVE
         out[2] = 0x00;
         out[3] = (seq >> 8) & 0xFF;
         out[4] =  seq       & 0xFF;
-        out[5] = Telnet.IAC;
-        out[6] = Telnet.EOR;
-        this.core.send(out);
+        out[5] = 0x00;        // successful completion / Device End
+        this.core.sendFramedRecord(out);
     }
 
     /** Reject a record we couldn't process. `senseCode` is one byte -
@@ -187,17 +228,16 @@ export class Tn3270eExtension {
      *    0x10  function not supported / generic input error
      *    0x08  operation check / sequence error
      *  Hosts care more about *whether* a negative response arrives than
-     *  the sense byte itself; our default is 0x10. */
-    sendNegativeResponse (seq, senseCode = 0x10) {
-        const out = new Uint8Array(8);
+     *  the status byte itself; our default is 0x02 (operation check). */
+    sendNegativeResponse (seq, senseCode = 0x02) {
+        if (!this.tn3270e || !this.functions.includes(Tn3270e.FN_RESPONSES)) return;
+        const out = new Uint8Array(6);
         out[0] = TnHeader.TYPE_RESPONSE;
         out[1] = 0x00;
         out[2] = 0x01;        // NEGATIVE
         out[3] = (seq >> 8) & 0xFF;
         out[4] =  seq       & 0xFF;
-        out[5] = senseCode & 0xFF;
-        out[6] = Telnet.IAC;
-        out[7] = Telnet.EOR;
-        this.core.send(out);
+        out[5] = (senseCode >= 0 && senseCode <= 3) ? senseCode : 0x02;
+        this.core.sendFramedRecord(out);
     }
 }

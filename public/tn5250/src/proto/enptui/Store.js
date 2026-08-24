@@ -21,6 +21,17 @@ export class EnptuiStore {
         this.constructs = [];
     }
 
+    /** Preserve the full GUI graph across 5250 Save/Restore Screen.
+     *  structuredClone keeps typed arrays and the parent references used
+     *  by attached scroll bars intact. */
+    snapshot () {
+        return structuredClone(this.constructs);
+    }
+
+    restore (snapshot) {
+        this.constructs = snapshot ? structuredClone(snapshot) : [];
+    }
+
     add (construct) {
         if (!construct) return;
         // The host may re-emit a construct at the same SBA position

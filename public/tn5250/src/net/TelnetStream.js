@@ -26,7 +26,7 @@ export class TelnetStream {
     // ---- pass-through API ---------------------------------------------
 
     feed (b)         { this.core.feed(b); }
-    close ()         { this.core.close(); }
+    close ()         { this.env.clearSensitive(); this.core.close(); }
     sendRecord (rec) { this.core.sendRecord(rec); }
     sendNvtText (s)  { this.core.sendNvtText(s); }
 

@@ -48,8 +48,8 @@ subprotocol; websockify accepts it by default.
 already up:
 
 ```
-wss://tk5.bencz.cc:6080        (Hercules MVS 3.8j Turnkey 5 - for TN3270)
-wss://pub400.bencz.cc:6080     (pub400.com IBM i - for TN5250)
+wss://tk5.bencz.cc/        (Hercules MVS 3.8j Turnkey 5 - for TN3270)
+wss://pub400.bencz.cc/     (pub400.com IBM i - for TN5250)
 ```
 
 The MVS image is from [tk5-hercules](https://github.com/bencz/tk5-hercules);
@@ -65,7 +65,7 @@ In the toolbar, set the bridge URL - for example one of:
 
 ```
 ws://localhost:6080/                            (single backend)
-wss://tk5.bencz.cc:6080/                        (public test server)
+wss://tk5.bencz.cc/                             (public test server)
 wss://relay.example.com/tcp?port={port}         ({port} is substituted)
 ```
 
@@ -108,14 +108,13 @@ bottom turns green.
 **Telnet / TN3270E (RFC 2355):**
 
 - BINARY, EOR, TERMINAL-TYPE option negotiation (RFC 1041)
-- TN3270E DEVICE-TYPE / FUNCTIONS subnegotiation
-  (BIND-IMAGE, RESPONSES, SYSREQ)
+- TN3270E DEVICE-TYPE / FUNCTIONS subnegotiation; only the implemented
+  `RESPONSES` function is advertised
 - 5-byte data-stream header on inbound and outbound records
 - Outbound sequence numbers are unique and monotonically increasing
   (RFC 2355 §3.2)
-- Dispatch by data-type - only `3270-DATA` is fed to the parser;
-  `BIND-IMAGE` / `UNBIND` / `NVT-DATA` / `SSCP-LU-DATA` are accepted
-  and ignored.
+- Dispatch by data-type - only `3270-DATA` is fed to the parser; control
+  data types are not falsely advertised as supported functions
 - ALWAYS-RESPONSE / ERROR-RESPONSE handled correctly:
   positive `RESPONSE` on success, negative `RESPONSE` (with sense byte)
   when the parser rejects a record, both echoing the host's seq.
@@ -195,13 +194,14 @@ file issues with a screenshot and the host you hit them on.
 
 **Telnet / TN5250E (RFC 1205, RFC 4777):**
 
-- BINARY, EOR, TERMINAL-TYPE, NEW-ENVIRON negotiation
+- BINARY, EOR, SUPPRESS-GO-AHEAD, TERMINAL-TYPE, NEW-ENVIRON negotiation
 - NEW-ENVIRON variables: `DEVNAME`, `KBDTYPE`, `CODEPAGE`, `CHARSET`,
   and the bypass-signon set (`IBMRSEED`, `USER`, `IBMSUBSPWD`)
 - 10-byte GDS record header on inbound and outbound records
 - GDS opcodes: NO-OP, INVITE, OUTPUT-ONLY, PUT-GET, SAVE/RESTORE-SCREEN,
   READ-IMMEDIATE, MESSAGE-LIGHT on/off
-- ATTN / SYSREQ flags surfaced through the OIA
+- ATTN / SYSREQ flags, RFC 4777 Startup Response status, protocol negative
+  responses, and complete System Request SAVE/RESTORE flow
 
 **5250 datastream:**
 
@@ -221,12 +221,14 @@ file issues with a screenshot and the host you hit them on.
 - Bypass-signon: optional `USER` / password fields in the toolbar
   short-circuit the standard signon panel (RFC 4777 §5)
 
-**ENPTUI (partial):**
+**ENPTUI:**
 
 - WDSF (Write to Display Structured Field) decoder
-- Primitives: Window, ScrollBar, Selection Field
-- Not yet covered: menu bars, choice presentation with cursor
-  progression, the full set of WDSF minor structures
+- Primitives: Window, ScrollBar, Selection Field, menu/push-button variants,
+  grids, programmable mouse regions, Write Data, and cascading removal
+- Keyboard/mouse interaction, mnemonic activation, restricted-window cursor,
+  selection state, overlay rendering, and SAVE/RESTORE persistence
+- The 5292-2 Query Reply advertises enhanced graphics; other models do not
 
 **Models supported (5250):**
 
@@ -249,10 +251,10 @@ and persisted per connection profile:
 
 - **CP037** - US English EBCDIC. Default. Used by classic z/OS, Hercules
   turnkey, pub400 (IBM i), and most legacy mainframe shops.
-- **CP1047** - Latin-1 Open Systems EBCDIC. The line-feed byte sits at
-  0x15 instead of 0x25, plus a few special-character swaps (`¢`/`[`,
-  `!`/`]`, `¬`/`^`, etc.). Used by USS / z/OS Unix and many modern
-  hosts that interoperate with ASCII tooling.
+- **CP1047** - Latin-1 Open Systems EBCDIC. It differs from CP037 at the
+  bracket/caret-related punctuation positions (`[`, `]`, `^`, `¬`, `¨`,
+  and `Ý`). Used by USS / z/OS Unix and modern hosts that interoperate
+  with ASCII tooling.
 
 Switching mid-session re-renders existing cells through the new table
 immediately, no reconnect needed. Adding another code page is a 10-line
@@ -265,6 +267,33 @@ Targets evergreen browsers (Chrome / Edge / Firefox / Safari). Uses
 ES modules, private class fields (`#name`), `Uint8Array`, Web
 Audio (for the alarm beep) and `localStorage` (for profiles).
 No transpilation, no bundler.
+
+Canvas output is device-pixel-ratio aware, so terminal glyphs stay sharp on
+HiDPI/Retina displays.
+
+## Development and verification
+
+Node.js 20 or newer is used only for validation; the application remains
+build-free in the browser:
+
+```sh
+npm run check
+npm test
+```
+
+The container image uses the official, version-pinned nginx image, serves on
+port 8080, includes a health check, and sends baseline browser security
+headers:
+
+```sh
+docker build -t ironterm .
+docker run --rm -p 8080:8080 ironterm
+```
+
+Bypass-signon sends the RFC 4777 plaintext substitution-password form. The UI
+requires `wss://` and clears the password field on connect, but the relay is a
+trusted endpoint and its TCP hop to port 23 may still be plaintext. Do not send
+credentials through a relay you do not control or trust.
 
 For `wss://` with a self-signed certificate you have to visit
 `https://<bridge-host>:<port>/` once and accept the cert; the browser
@@ -281,6 +310,6 @@ the 5250 side.
   to add (delta maps in `Ebcdic.js`); CP037 + CP1047 ship today
 - **DBCS / SO/SI** (Asian double-byte)
 - **5250 printer sessions** - only display devices for now
-- **5250 ENPTUI - full set** - Window / ScrollBar / Selection Field
-  primitives are decoded, but menu bars and the long tail of WDSF
-  minor structures aren't wired through yet
+- **5250 ENPTUI long tail** - the actively implemented primitives are listed
+  above; uncommon image/fax, video/audio, audit-window and vendor-specific
+  WDSF structures are not advertised or decoded

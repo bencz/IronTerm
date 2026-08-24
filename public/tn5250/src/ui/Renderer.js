@@ -11,7 +11,7 @@
 // they paint over any underlying text/colour the host emitted.
 
 import { ATTR_BASE } from '../proto/Constants.js';
-import { COLOR, fgFor, bgFor } from './theme.js';
+import { COLOR, TERMINAL_FONT } from './theme.js';
 import { EnptuiOverlay } from './EnptuiOverlay.js';
 
 export class Renderer {
@@ -21,6 +21,9 @@ export class Renderer {
         this.screen = screen;
         this.cellWidth = 0;
         this.cellHeight = 0;
+        this.viewportWidth = 1;
+        this.viewportHeight = 1;
+        this.pixelRatio = 1;
         this.fontSize = 16;
         this.cursorBlink = true;
         this.selection = null;
@@ -45,11 +48,15 @@ export class Renderer {
 
     resize () {
         const rect = this.canvas.getBoundingClientRect();
-        this.canvas.width  = Math.max(1, Math.floor(rect.width));
-        this.canvas.height = Math.max(1, Math.floor(rect.height));
+        this.viewportWidth  = Math.max(1, Math.floor(rect.width));
+        this.viewportHeight = Math.max(1, Math.floor(rect.height));
+        this.pixelRatio = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 1));
+        this.canvas.width  = Math.floor(this.viewportWidth * this.pixelRatio);
+        this.canvas.height = Math.floor(this.viewportHeight * this.pixelRatio);
+        this.ctx.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
         const s = this.screen;
-        this.cellWidth  = this.canvas.width  / s.cols;
-        this.cellHeight = this.canvas.height / s.rows;
+        this.cellWidth  = this.viewportWidth  / s.cols;
+        this.cellHeight = this.viewportHeight / s.rows;
         this.fontSize = this.#computeFontSize();
         this.draw();
     }
@@ -58,7 +65,7 @@ export class Renderer {
         const ctx = this.ctx;
         // Find the largest font that keeps glyphs within cell bounds.
         for (let sz = Math.floor(this.cellHeight); sz >= 6; sz--) {
-            ctx.font = `${sz}px "IBM Plex Mono", monospace`;
+            ctx.font = `${sz}px ${TERMINAL_FONT}`;
             const w = ctx.measureText('W').width;
             if (w <= this.cellWidth * 0.95) return sz;
         }
@@ -84,8 +91,8 @@ export class Renderer {
         if (!ctx) return;
 
         ctx.fillStyle = COLOR.black;
-        ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        ctx.font = `${this.fontSize}px "IBM Plex Mono", monospace`;
+        ctx.fillRect(0, 0, this.viewportWidth, this.viewportHeight);
+        ctx.font = `${this.fontSize}px ${TERMINAL_FONT}`;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
 

@@ -236,7 +236,11 @@ export class ScreenBuffer {
         for (let k = 0; k < faIndices.length; k++) {
             const start = faIndices[k];
             const next  = faIndices[(k + 1) % faIndices.length];
-            const length = (next - start + this.size) % this.size;
+            // A single-field formatted screen wraps back to the same FA and
+            // therefore covers the entire presentation space, not zero cells.
+            const length = faIndices.length === 1
+                ? this.size
+                : (next - start + this.size) % this.size;
             const faCell = this.cells[start];
             const fa = faCell.fa;
             this.fields.push({
@@ -298,6 +302,7 @@ export class ScreenBuffer {
     fieldAt (addr) {
         if (!this.formatted) return null;
         for (const f of this.fields) {
+            if (f.length >= this.size) return f;
             const end = (f.start + f.length) % this.size;
             if (f.start <= end) {
                 if (addr >= f.start && addr < end) return f;
@@ -363,8 +368,21 @@ export class ScreenBuffer {
      *  field is full) and we beep. */
     typeByte (ebcdic) {
         const field = this.fieldAt(this.cursor);
+        if (!this.formatted) {
+            const cell = this.cells[this.cursor];
+            cell.byte = ebcdic & 0xFF;
+            cell.glyph = this.ebcdic.toChar(ebcdic);
+            cell.modified = true;
+            this.cursor = (this.cursor + 1) % this.size;
+            return true;
+        }
         if (!field || field.protected) return false;
         if (this.cursor === field.start) return false;     // can't type onto FA
+        if (field.numeric && !((ebcdic >= 0xF0 && ebcdic <= 0xF9) ||
+                               ebcdic === 0x4B || ebcdic === 0x60 || ebcdic === 0x40)) {
+            this.alarm = true;
+            return false;
+        }
 
         if (this.insertMode) {
             // Walk from cursor up to the cell just before the next FA;

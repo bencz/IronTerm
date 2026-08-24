@@ -38,8 +38,7 @@ export const NewEnviron = Object.freeze({
 //    2    2    0x12 0xA0  (GDS record type)
 //    4    2    reserved (0x00 0x00)
 //    6    1    variable header length (always 0x04)
-//    7    1    flags        ERR / ATN / SRQ / TRQ / HLP (see Gds.Flag)
-//    8    1    reserved (0x00)
+//    7    2    flags        ERR / ATN / SRQ / TRQ / HLP (see Gds.Flag)
 //    9    1    opcode       (Gds.Op.*)
 export const Gds = Object.freeze({
     HEADER_LEN: 10,
@@ -48,11 +47,11 @@ export const Gds = Object.freeze({
     VARHDR_LEN: 0x04,
 
     Flag: Object.freeze({
-        ERR: 0x80,
-        ATN: 0x40,
-        SRQ: 0x04,
-        TRQ: 0x02,
-        HLP: 0x01,
+        ERR: 0x8000,
+        ATN: 0x4000,
+        SRQ: 0x0400,
+        TRQ: 0x0200,
+        HLP: 0x0100,
     }),
 
     Op: Object.freeze({

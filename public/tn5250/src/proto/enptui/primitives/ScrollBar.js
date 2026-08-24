@@ -18,8 +18,9 @@
 //
 // Reference: ENPTUI scroll-bar construct definition.
 //
-// Phase-2b stub: we capture the geometry so the renderer can paint the
-// track + thumb. Drag-to-scroll interactivity is left for Phase 2c.
+// The decoder captures geometry for rendering; InputController maps bar
+// zones to the corresponding Roll AIDs. Direct thumb dragging is not an
+// advertised capability.
 
 import { ConstructKind } from '../Constants.js';
 

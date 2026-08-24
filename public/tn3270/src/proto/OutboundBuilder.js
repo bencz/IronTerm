@@ -31,6 +31,17 @@ export class OutboundBuilder {
         BufferAddress.encode(buf.cursor, tmp, 0);
         out.push(tmp[0], tmp[1]);
 
+        // In an unformatted presentation space there are no SBA-delimited
+        // fields. Read Modified returns the buffer from address zero through
+        // the last non-null character.
+        if (!buf.formatted) {
+            let last = -1;
+            for (let i = 0; i < buf.size; i++)
+                if (buf.cells[i].byte !== 0x00) last = i;
+            for (let i = 0; i <= last; i++) out.push(buf.cells[i].byte);
+            return Uint8Array.from(out);
+        }
+
         // Walk modified fields and pack their content. The SBA points at
         // the FIRST CONTENT cell of the field (one past the FA byte -
         // i.e. startPosition + 1), which is what every host expects.

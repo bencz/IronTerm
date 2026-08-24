@@ -14,8 +14,9 @@ import { TelnetStream } from './net/TelnetStream.js';
 import { WebSocketTransport } from '../../shared/src/net/WebSocketTransport.js';
 import { InboundParser } from './proto/InboundParser.js';
 import { OutboundBuilder } from './proto/OutboundBuilder.js';
+import { decodeStartupRecord } from './proto/StartupRecord.js';
 import * as Gds from './proto/GdsHeader.js';
-import { Aid, Models, Gds as GdsConsts } from './proto/Constants.js';
+import { Aid, Models, Gds as GdsConsts, NegResp } from './proto/Constants.js';
 
 // Map an AID byte back to its PF number, or null when it's not a PF.
 function pfNumberFor (aid) {
@@ -24,7 +25,7 @@ function pfNumberFor (aid) {
     return null;
 }
 import { Ebcdic } from '../../shared/src/proto/Ebcdic.js';
-import { debugFor } from '../../shared/src/core/debug.js';
+import { debugFor, isDebugEnabled } from '../../shared/src/core/debug.js';
 
 const debug = debugFor('tn5250.terminal');
 
@@ -35,9 +36,12 @@ const debug = debugFor('tn5250.terminal');
 const DEFAULT_MODEL = '5292-2';
 
 export class Terminal {
-    constructor ({ canvas, statusEl, oiaEls, nvtEl, codePage = 'CP037', modelKey = DEFAULT_MODEL }) {
+    constructor ({ canvas, statusEl, oiaEls, nvtEl, codePage = 'CP037', modelKey = DEFAULT_MODEL,
+                   onConnectionState }) {
         this.canvas = canvas;
         this.statusEl = statusEl;
+        this.statusRevision = 0;
+        this.onConnectionState = onConnectionState ?? (() => {});
 
         this.modelKey = modelKey;
         this.codePage = codePage;
@@ -66,6 +70,8 @@ export class Terminal {
             onBackTab:    ()    => { this.screen.backTab(); this.draw(); },
             onMoveCursor: (i)   => { this.screen.cursor = i; this.draw(); },
             onFlash:      (msg) => this.flashStatus(msg),
+            onSystemRequest: () => this.sendSystemRequest(),
+            onFieldExit:   ()    => this.fieldExit(),
         });
 
         window.addEventListener('resize', () => this.renderer.resize());
@@ -76,9 +82,10 @@ export class Terminal {
         this.draw();
         this.setStatus('disconnected', 'disconnected');
 
-        // Wire-level record log. Captures both directions of the 5250
-        // datastream so we can post-mortem decode any rendering issue.
-        // Last 200 records, dump via `terminal.dumpStream()`.
+        // Wire-level capture can include user-entered field data, so it is
+        // opt-in through the `tn5250.stream` debug scope. Last 200 records,
+        // dump via `terminal.dumpStream()`.
+        this.captureStream = isDebugEnabled('tn5250.stream');
         this.streamLog = [];
         this.streamLogMax = 200;
         this.streamStartedAt = 0;
@@ -86,6 +93,7 @@ export class Terminal {
 
     /** Push one record (in or out) onto the rolling log. */
     #logRecord (dir, opcode, flags, bytes) {
+        if (!this.captureStream) return;
         if (this.streamStartedAt === 0) this.streamStartedAt = Date.now();
         const t = Date.now() - this.streamStartedAt;
         this.streamLog.push({
@@ -100,16 +108,18 @@ export class Terminal {
     /** Pretty-print every captured record. Copy the output and send it
      *  back for offline decoding when the rendering looks wrong. */
     dumpStream () {
+        if (!this.captureStream)
+            return "stream capture is disabled; add 'tn5250.stream' to localStorage['ironterm.debug'], reload, and reconnect";
         if (this.streamLog.length === 0) return '(stream log is empty - reconnect)';
         const lines = [
             `# IronTerm TN5250 stream log - ${this.streamLog.length} records`,
-            `# format: [+ms] DIR opcode=NN flags=NN len=N : hex bytes`,
+            `# format: [+ms] DIR opcode=NN flags=NNNN len=N : hex bytes`,
             '',
         ];
         for (const r of this.streamLog) {
             const t = String(r.t).padStart(7, ' ');
             const op = r.opcode.toString(16).padStart(2, '0');
-            const fl = r.flags.toString(16).padStart(2, '0');
+            const fl = r.flags.toString(16).padStart(4, '0');
             lines.push(`[+${t}ms] ${r.dir} opcode=0x${op} flags=0x${fl} len=${r.len}`);
             // 32 bytes per line for readability
             const bytes = r.hex.split(' ');
@@ -163,34 +173,41 @@ export class Terminal {
         this.renderer.resize();
         this.draw();
         this.setStatus('connecting…', 'connecting');
+        this.onConnectionState('connecting');
         this.oia.setConnection('connecting');
         this.oia.setModel('-');
         this.nvt.clear();
         this.nvt.hide();
 
+        const envOptions = this.envOptions;
+        this.envOptions = { ...this.envOptions };
+        delete this.envOptions.password;
         this.telnet = new TelnetStream({
             send:         (b) => this.transport?.send(b),
             onRecord:     (rec) => this.handleRecord(rec),
             onState:      (s) => this.onTelnetState(s),
             onNvt:        (b) => this.nvt.append(b),
             terminalType: m.terminalType,
-            envOptions:   this.envOptions,
+            envOptions,
         });
 
         this.transport = new WebSocketTransport(url, {
             onOpen:  () => {
                 this.setStatus('connected', 'connected');
                 this.oia.setConnection('connected');
+                this.onConnectionState('connected');
             },
-            onData:  (b) => this.telnet.feed(b),
+            onData:  (b) => this.telnet?.feed(b),
             onClose: (reason) => {
                 this.setStatus(`disconnected: ${reason}`, 'disconnected');
                 this.oia.setConnection('disconnected');
                 this.cleanup();
+                this.onConnectionState('disconnected');
             },
             onError: (err) => {
                 this.setStatus(`error: ${err}`, 'error');
                 this.oia.setConnection('error');
+                this.onConnectionState('error');
             },
         });
         try {
@@ -199,6 +216,7 @@ export class Terminal {
             this.setStatus(`error: ${err}`, 'error');
             this.oia.setConnection('error');
             this.cleanup();
+            this.onConnectionState('error');
         }
     }
 
@@ -208,6 +226,7 @@ export class Terminal {
         this.cleanup();
         this.setStatus('disconnected', 'disconnected');
         this.oia.setConnection('disconnected');
+        this.onConnectionState('disconnected');
     }
 
     cleanup () {
@@ -244,6 +263,13 @@ export class Terminal {
             Array.from(payload.slice(0, 48)).map(b => b.toString(16).padStart(2,'0')).join(' '),
             `(len=${payload.length})`);
 
+        if (flags & GdsConsts.Flag.ERR) {
+            const code = payload[0] ?? 0;
+            this.flashStatus(`host rejected request (0x${code.toString(16).padStart(2, '0')})`, 'error', 3000);
+            debug.warn(`negative response from host: 0x${code.toString(16).padStart(2, '0')}`);
+            return;
+        }
+
         // Startup-confirmation / termination records: miscFlags1 byte
         // (offset 4 of the GDS header) carries 0x40 = termination,
         // 0x80 = startup confirmation, 0x90 = startup + diagnostics.
@@ -251,7 +277,26 @@ export class Terminal {
         // name), NOT a 5250 command sequence. Trying to dispatch it
         // through #process() would crash on the first non-ESC byte.
         if (miscFlags1 === 0x80 || miscFlags1 === 0x90 || miscFlags1 === 0x40) {
-            debug.log(`startup/termination record miscFlags1=0x${miscFlags1.toString(16)} — skipping parser dispatch`);
+            if (miscFlags1 === 0x40) {
+                this.setStatus('session terminated by host', 'disconnected');
+                this.oia.setSystem('END');
+                return;
+            }
+            const startup = decodeStartupRecord(payload, this.screen.ebcdic);
+            this.telnet?.env.clearSensitive();
+            if (!startup) {
+                debug.warn('malformed RFC 4777 startup response');
+                this.setStatus('connected · unrecognised startup response', 'error');
+                return;
+            }
+            this.oia.setSystem(startup.system || 'SYS');
+            if (startup.device) this.oia.setModel(startup.device);
+            const target = [startup.system, startup.device].filter(Boolean).join('/');
+            this.setStatus(
+                `${startup.success ? 'connected' : 'startup error'} · ${startup.code}`
+                    + (target ? ` · ${target}` : '')
+                    + ` · ${startup.message}`,
+                startup.success ? 'connected' : 'error');
             return;
         }
 
@@ -265,26 +310,40 @@ export class Terminal {
                 // the embedded WTD finishes drawing - the host expects
                 // us to unlock and wait for an AID-bearing reply. This
                 // matches the IBM 5250 invite-for-input semantics.
-                try { this.parser.process(payload); }
-                catch (err) { debug.warn('parser error:', err); }
+                if (!this.#processPayload(payload)) return;
                 this.parser.readPending = true;
                 this.parser.invited     = true;
                 this.screen.keyboardLocked = false;
                 break;
             case GdsConsts.Op.OUTPUT_ONLY:
-            case GdsConsts.Op.SAVE_SCREEN:
-            case GdsConsts.Op.RESTORE_SCREEN:
-                try {
-                    this.parser.process(payload);
-                } catch (err) {
-                    debug.warn('parser error:', err);
-                }
+                if (!this.#processPayload(payload)) return;
                 break;
+            case GdsConsts.Op.SAVE_SCREEN:
+                if (!this.#isScreenControlPayload(payload, 0x02)) {
+                    this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
+                    return;
+                }
+                this.screen.saveScreen();
+                this.#sendOpcode(GdsConsts.Op.SAVE_SCREEN,
+                    this.builder.buildSaveScreenResponse());
+                return;
+            case GdsConsts.Op.RESTORE_SCREEN:
+                if (!this.#isScreenControlPayload(payload, 0x12, true)) {
+                    this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
+                    return;
+                }
+                if (!this.screen.restoreScreen()) {
+                    this.#sendNegativeResponse(NegResp.STATE_ERROR);
+                    return;
+                }
+                this.oia.setSystem('SYS');
+                this.draw();
+                return;
             case GdsConsts.Op.READ_IMMEDIATE:
                 // Host wants an immediate response without an AID; we
                 // submit an "Enter with no data" reply.
                 this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
-                                 this.builder.buildReadResponse());
+                    this.builder.buildReadResponse({ includeAll: true, aid: 0x00 }));
                 return;
             case GdsConsts.Op.READ_SCREEN:
                 this.#sendOpcode(GdsConsts.Op.NO_OPERATION,
@@ -310,13 +369,31 @@ export class Terminal {
         // Query → answer with our capability descriptor.
         if (this.parser.queryRequested) {
             this.parser.queryRequested = false;
-            this.#sendOpcode(GdsConsts.Op.NO_OPERATION, this.builder.buildQueryResponse(true));
+            this.#sendOpcode(GdsConsts.Op.NO_OPERATION,
+                this.builder.buildQueryResponse({
+                    modelKey: this.modelKey,
+                    enhanced: this.modelKey === '5292-2',
+                }));
+        }
+
+        if (this.parser.queryStationStateRequested) {
+            this.parser.queryStationStateRequested = false;
+            // We do not claim Query Station State in the Query Reply.
+            // Reject it explicitly if a host sends it anyway instead of
+            // leaving the controller waiting for a response forever.
+            this.#sendNegativeResponse(NegResp.USAGE_ERROR);
         }
 
         // Read Screen Immediate / To Print → dump the screen back.
         if (this.parser.readScreenRequested) {
             this.parser.readScreenRequested = false;
             this.#sendOpcode(GdsConsts.Op.NO_OPERATION, this.builder.buildReadScreenResponse());
+        }
+
+        if (this.parser.readImmediateRequested) {
+            this.parser.readImmediateRequested = false;
+            this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
+                this.builder.buildReadResponse({ aid: 0x00, preserveNulls: true }));
         }
 
         if (this.screen.pendingCursor >= 0) {
@@ -336,6 +413,28 @@ export class Terminal {
         this.draw();
     }
 
+    #processPayload (payload) {
+        try {
+            this.parser.process(payload);
+            return true;
+        } catch (err) {
+            debug.warn('parser error:', err);
+            if (err?.negativeResponse)
+                this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
+            return false;
+        }
+    }
+
+    #isScreenControlPayload (payload, command, allowImage = false) {
+        if (payload.length < 2 || payload[0] !== 0x04 || payload[1] !== command)
+            return false;
+        return allowImage || payload.length === 2;
+    }
+
+    #sendNegativeResponse (code) {
+        this.#sendOpcode(GdsConsts.Op.NO_OPERATION, Uint8Array.of(code), GdsConsts.Flag.ERR);
+    }
+
     // ---- outbound ------------------------------------------------------
 
     #sendOpcode (opcode, payload, flags = 0) {
@@ -347,6 +446,12 @@ export class Terminal {
 
     sendAid (aidByte) {
         if (!this.telnet) return;
+        if (this.screen.keyboardLocked && aidByte !== Aid.HELP) {
+            this.screen.alarm = true;
+            this.flashStatus('keyboard locked by host', 'error', 1200);
+            this.draw();
+            return;
+        }
         // Honour the SOH pf-enable mask: refuse to transmit when the
         // host explicitly disabled the requested PF (real 5250 hardware
         // beeps and ignores). Help / Print / Clear / roll / Enter are
@@ -355,6 +460,18 @@ export class Terminal {
         if (pf !== null && !this.screen.isPfEnabled(pf)) {
             this.flashStatus(`PF${pf} disabled by host`, 'error');
             this.screen.alarm = true;
+            this.draw();
+            return;
+        }
+        const shortAid = aidByte === Aid.HELP || aidByte === Aid.CLEAR
+            || aidByte === Aid.PRINT || aidByte === Aid.ROLL_UP
+            || aidByte === Aid.ROLL_DOWN || aidByte === Aid.ROLL_LEFT
+            || aidByte === Aid.ROLL_RIGHT;
+        const validation = shortAid ? null : this.screen.validateForAid();
+        if (validation) {
+            this.screen.cursor = (validation.field.start + 1) % this.screen.size;
+            this.screen.alarm = true;
+            this.flashStatus(`field requires ${validation.reason}`, 'error', 2000);
             this.draw();
             return;
         }
@@ -368,7 +485,10 @@ export class Terminal {
             return;
         }
         this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
-                         this.builder.buildAidResponse(aidByte));
+                         this.builder.buildAidResponse(aidByte, {
+                             includeAll: this.parser.readType === 0x42,
+                             preserveNulls: this.parser.readType === 0x83,
+                         }));
         this.screen.keyboardLocked = true;
         this.parser.readPending = false;
         this.draw();
@@ -379,10 +499,36 @@ export class Terminal {
         this.#sendOpcode(GdsConsts.Op.NO_OPERATION, new Uint8Array(0), GdsConsts.Flag.ATN);
     }
 
+    sendSystemRequest () {
+        if (!this.telnet) return;
+        this.#sendOpcode(GdsConsts.Op.NO_OPERATION, new Uint8Array(0), GdsConsts.Flag.SRQ);
+        this.screen.keyboardLocked = true;
+        this.oia.setSystem('SRQ');
+        this.draw();
+    }
+
     type (str) {
         if (this.screen.keyboardLocked) return;
         for (let i = 0; i < str.length; i++)
             this.screen.typeByte(this.screen.ebcdic.fromCharCode(str.charCodeAt(i)));
+        if (this.screen.autoEnterRequested) {
+            this.screen.autoEnterRequested = false;
+            this.sendAid(Aid.ENTER);
+            return;
+        }
+        this.draw();
+    }
+
+    fieldExit () {
+        if (!this.screen.fieldExit()) {
+            this.draw();
+            return;
+        }
+        if (this.screen.autoEnterRequested) {
+            this.screen.autoEnterRequested = false;
+            this.sendAid(Aid.ENTER);
+            return;
+        }
         this.draw();
     }
 
@@ -391,6 +537,8 @@ export class Terminal {
     draw () {
         this.renderer.draw();
         this.oia.setLocked(this.screen.keyboardLocked);
+        this.oia.setInsert(this.screen.insertMode);
+        this.oia.setMessageLight(this.screen.messageLight);
         const r = ((this.screen.cursor / this.screen.cols) | 0) + 1;
         const c =  (this.screen.cursor % this.screen.cols) + 1;
         this.oia.setCursor(r, c);
@@ -398,6 +546,7 @@ export class Terminal {
     }
 
     setStatus (text, cls) {
+        this.statusRevision++;
         this.statusEl.textContent = text;
         this.statusEl.className = cls;
     }
@@ -405,6 +554,9 @@ export class Terminal {
         const prev = this.statusEl.textContent;
         const prevCls = this.statusEl.className;
         this.setStatus(text, cls);
-        setTimeout(() => this.setStatus(prev, prevCls), ms);
+        const revision = this.statusRevision;
+        setTimeout(() => {
+            if (this.statusRevision === revision) this.setStatus(prev, prevCls);
+        }, ms);
     }
 }

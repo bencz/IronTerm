@@ -31,6 +31,7 @@ export const Telnet = Object.freeze({
 // in their respective extension modules.
 export const TelnetOption = Object.freeze({
     BINARY:        0x00,
+    SUPPRESS_GO_AHEAD: 0x03,
     TERMINAL_TYPE: 0x18,
     EOR:           0x19,
 });

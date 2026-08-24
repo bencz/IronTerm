@@ -16,12 +16,10 @@
 // implementation (everything 5250-specific), VAR is for "well-known"
 // telnet variables (USER, JOB, etc. per RFC 1572).
 //
-// Optional fields (USER + IBMRSEED + IBMSUBSPW) drive password
-// substitution for bypass-signon (RFC 4777 §5). When `password` is
-// provided we MUST also have negotiated a server-supplied seed - we
-// stub that for now and treat it as a literal pre-shared value. Real
-// password substitution (DES MAC against the seed) lives in Signon.js
-// and will be filled in a follow-up.
+// Optional fields (USER + IBMRSEED + IBMSUBSPW) drive plaintext
+// bypass-signon as defined by RFC 4777 §5: an empty IBMRSEED explicitly
+// selects the unencrypted substitution-password form. The UI only allows
+// this over WSS, because the password remains sensitive on this hop.
 
 import { Telnet } from '../../../shared/src/proto/TelnetConstants.js';
 import { TelnetOption, NewEnviron, Models } from '../proto/Constants.js';
@@ -71,11 +69,13 @@ export class NewEnvironExtension {
         return opt === this.OPTION;
     }
 
-    onOptionEnabled (opt) {
-        if (opt === this.OPTION) this.core.setState({ newEnviron: true });
+    onOptionEnabled (opt, direction) {
+        if (opt === this.OPTION && direction === 'local')
+            this.core.setState({ newEnviron: true });
     }
-    onOptionDisabled (opt) {
-        if (opt === this.OPTION) this.core.setState({ newEnviron: false });
+    onOptionDisabled (opt, direction) {
+        if (opt === this.OPTION && direction === 'local')
+            this.core.setState({ newEnviron: false });
     }
 
     // 5250 doesn't add anything to the record itself - the GDS header
@@ -91,55 +91,108 @@ export class NewEnvironExtension {
         // Layout: 0x27 <verb> [VAR|USERVAR <name> [VALUE <value>]...]
         const verb = data[1];
         if (verb === NewEnviron.SEND) {
-            this.#sendIs();
+            this.#sendIs(this.#parseRequest(data.subarray(2)));
         }
         // INFO and IS from the host are informational; we don't act.
     }
 
     /** Compose and send IAC SB NEW-ENVIRON IS <vars> IAC SE. */
-    #sendIs () {
+    #sendIs (requested) {
         const parts = [];
         parts.push(Telnet.IAC, Telnet.SB, this.OPTION, NewEnviron.IS);
+        const wants = (name, kind = NewEnviron.USERVAR) =>
+            requested.names.has(name)
+            || (kind === NewEnviron.VAR ? requested.allVar : requested.allUserVar);
 
-        if (this.kbdType)
+        if (this.kbdType && wants('KBDTYPE'))
             this.#pushUserVar(parts, 'KBDTYPE', this.kbdType);
-        if (this.codePage)
+        if (this.codePage && wants('CODEPAGE'))
             this.#pushUserVar(parts, 'CODEPAGE', this.codePage);
-        if (this.charset)
+        if (this.charset && wants('CHARSET'))
             this.#pushUserVar(parts, 'CHARSET', this.charset);
-        if (this.devName)
-            this.#pushUserVar(parts, 'DEVNAME', this.#nextDevName());
+        if (this.devName && wants('DEVNAME'))
+            this.#pushUserVar(parts, 'DEVNAME', this.#currentDevName());
         // IBMSENDCONFREC = "YES" tells the IBM i to emit the startup
         // confirmation GDS record (miscFlags1 = 0x80). Without it the
         // host may skip the confirmation entirely - we always send this
         // for display sessions.
-        this.#pushUserVar(parts, 'IBMSENDCONFREC', 'YES');
+        if (wants('IBMSENDCONFREC'))
+            this.#pushUserVar(parts, 'IBMSENDCONFREC', 'YES');
 
         // Bypass-signon block (RFC 4777 §5). When present, the host
         // signs the user in without showing the signon screen.
         if (this.user) {
-            this.#pushVar(parts, 'USER', this.user);
+            if (wants('USER', NewEnviron.VAR)) this.#pushVar(parts, 'USER', this.user);
 
-            if (this.password) {
-                // Phase 2a: send IBMRSEED with a placeholder zero seed
-                // and IBMSUBSPW with the plaintext. The IBM i host
-                // accepts this when QPWDRULES allows it. The full
-                // DES-MAC-based password substitution moves to
-                // Signon.js in a later phase.
+            if (this.password && (wants('IBMRSEED') || wants('IBMSUBSPW'))) {
+                // RFC 4777 permits plaintext substitution when IBMRSEED has
+                // an empty value (the preferred marker for an unencrypted
+                // password). Do not manufacture an incorrectly escaped zero
+                // seed: every zero is a NEW-ENVIRON control byte.
                 parts.push(NewEnviron.USERVAR);
                 this.#pushBytes(parts, ASCII.encode('IBMRSEED'));
                 parts.push(NewEnviron.VALUE);
-                parts.push(NewEnviron.ESC, 0, 0, 0, 0, 0, 0, 0, 0);
 
+                // IBMRSEED and IBMSUBSPW form one response pair. IBM i
+                // commonly requests only IBMRSEED (with a binary seed
+                // appended to its name), so the password must accompany
+                // that response even when IBMSUBSPW was not named.
                 this.#pushUserVar(parts, 'IBMSUBSPW', this.password);
             }
-            if (this.library)     this.#pushUserVar(parts, 'IBMCURLIB',  this.library);
-            if (this.initialMenu) this.#pushUserVar(parts, 'IBMIMENU',   this.initialMenu);
-            if (this.program)     this.#pushUserVar(parts, 'IBMPROGRAM', this.program);
+            if (this.library && wants('IBMCURLIB'))
+                this.#pushUserVar(parts, 'IBMCURLIB', this.library);
+            if (this.initialMenu && wants('IBMIMENU'))
+                this.#pushUserVar(parts, 'IBMIMENU', this.initialMenu);
+            if (this.program && wants('IBMPROGRAM'))
+                this.#pushUserVar(parts, 'IBMPROGRAM', this.program);
         }
 
         parts.push(Telnet.IAC, Telnet.SE);
+        if (parts.length - 6 > 1024)
+            throw new RangeError('NEW-ENVIRON payload exceeds RFC 4777 1024-byte limit');
         this.core.send(Uint8Array.from(parts));
+    }
+
+    /** Parse names listed by SEND. A marker with no name means the host is
+     *  requesting the general environment set, as used by IBM i. */
+    #parseRequest (bytes) {
+        const names = new Set();
+        if (bytes.length === 0)
+            return { names, allVar: true, allUserVar: true };
+
+        let current = [];
+        let marker = null;
+        let allVar = false;
+        let allUserVar = false;
+        const flush = () => {
+            if (marker === null) return;
+            if (current.length === 0) {
+                if (marker === NewEnviron.VAR) allVar = true;
+                else allUserVar = true;
+            } else {
+                const name = String.fromCharCode(...current).toUpperCase();
+                // An encrypted-password request appends the binary server
+                // seed to the IBMRSEED variable name.
+                names.add(name.startsWith('IBMRSEED') ? 'IBMRSEED' : name);
+            }
+            current = [];
+        };
+        for (let i = 0; i < bytes.length; i++) {
+            const b = bytes[i];
+            if (b === NewEnviron.ESC) {
+                if (++i < bytes.length && marker !== null) current.push(bytes[i]);
+            } else if (b === NewEnviron.VAR || b === NewEnviron.USERVAR) {
+                flush();
+                marker = b;
+            } else if (b === NewEnviron.VALUE) {
+                flush();
+                marker = null;       // SEND values are irrelevant
+            } else {
+                if (marker !== null) current.push(b);
+            }
+        }
+        flush();
+        return { names, allVar, allUserVar };
     }
 
     #pushUserVar (out, name, value) {
@@ -175,20 +228,18 @@ export class NewEnvironExtension {
 
     /** Append a sequence number on retries so the host gets a unique
      *  device name. The first attempt uses the bare name. */
-    #nextDevName () {
-        const base = this.devName;
-        if (this.deviceSequence === 0) {
-            this.deviceSequence++;
-            return base;
-        }
-        return base + this.deviceSequence++;
+    #currentDevName () {
+        const suffix = this.deviceSequence === 0 ? '' : String(this.deviceSequence);
+        return this.devName.slice(0, Math.max(0, 10 - suffix.length)) + suffix;
     }
 
     // ---- helpers used by Terminal.js after a Reject ------------------
 
     /** Compute the next attempt to make if the host rejected DEVNAME
      *  during signon; the caller must reconnect. */
-    bumpDeviceName () { this.deviceSequence++; }
+    bumpDeviceName () { this.deviceSequence++; return this.#currentDevName(); }
+
+    clearSensitive () { this.password = ''; }
 }
 
 /** Default kbdType / codepage / charset for the most common AS/400

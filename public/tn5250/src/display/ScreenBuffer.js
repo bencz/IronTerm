@@ -15,10 +15,9 @@
 //   • There's a saved/restored screen pair (SAVE/RESTORE opcodes) so
 //     pop-up help and window-style UIs can stack.
 //
-// We keep the model deliberately small for Phase 2: enough state to
-// drive the renderer, accept user input into the right fields, and
-// emit a correct AID response. Niceties (DUP, FIELD-EXIT semantics,
-// signed-numeric padding, double-byte runs) come in Phase 2b.
+// The model also owns input semantics (shift rules, Field Exit, FER,
+// adjustment, mandatory fields) and the ENPTUI construct store. DBCS
+// runs remain intentionally outside this single-byte presentation model.
 
 import { Ebcdic } from '../../../shared/src/proto/Ebcdic.js';
 import { ATTR_BASE, isAttribute, Ffw, Shift, Adjust } from '../proto/Constants.js';
@@ -55,6 +54,7 @@ class Field {
         this.monocase  = (this.ffw1 & Ffw.MONOCASE)   !== 0;
         this.mandatory = (this.ffw1 & Ffw.MANDATORY)  !== 0;
         this.adjust    =  this.ffw1 & Ffw.ADJUST;
+        this.exited    = !this.fer;
 
         // FCW (Field Control Word) pairs - tag bytes and their values
         // following the FFW. We pick out the three that affect runtime
@@ -100,10 +100,11 @@ export class ScreenBuffer {
         this.messageLight = false;
         this.alarm = false;
         this.insertMode = false;
+        this.autoEnterRequested = false;
 
-        // SAVE/RESTORE stack - shallow snapshots.
-        this.savedCells = null;
-        this.savedFields = null;
+        // SAVE/RESTORE slot. It includes ENPTUI and operator state, not
+        // just cells: System Request temporarily replaces the whole panel.
+        this.savedScreen = null;
 
         // After WTD orders are processed, IC sets `pendingCursor`; the
         // renderer reads it when it next paints.
@@ -149,13 +150,26 @@ export class ScreenBuffer {
     }
 
     resize (rows, cols) {
-        if (rows === this.rows && cols === this.cols) return;
         this.rows = rows;
         this.cols = cols;
         this.cells = new Array(rows * cols);
         for (let i = 0; i < this.cells.length; i++) this.cells[i] = new Cell();
         this.cursor = 0;
         this.fields = [];
+        this.keyboardLocked = true;
+        this.messageLight = false;
+        this.alarm = false;
+        this.insertMode = false;
+        this.autoEnterRequested = false;
+        this.savedScreen = null;
+        this.pendingCursor = -1;
+        this.activeAttr = DEFAULT_ATTR_DESC;
+        this.extendedAttr = null;
+        this.sysreqMode = false;
+        this.errorMode = false;
+        this.errorHelpMode = false;
+        this.soh = { resetMdt: false, errRow: 0, pfBytes: [0, 0, 0] };
+        this.enptui.clear();
     }
 
     // ---- mutation API used by the parser ------------------------------
@@ -166,11 +180,15 @@ export class ScreenBuffer {
         this.cursor = 0;
         this.messageLight = false;
         this.alarm = false;
+        this.insertMode = false;
+        this.autoEnterRequested = false;
+        this.pendingCursor = -1;
         this.sysreqMode = false;
         this.errorMode = false;
         this.errorHelpMode = false;
         this.activeAttr = DEFAULT_ATTR_DESC;
         this.extendedAttr = null;
+        this.soh = { resetMdt: false, errRow: 0, pfBytes: [0, 0, 0] };
         // Clear Unit also wipes every active GUI construct - the host
         // is starting over with the screen, so windows/selections that
         // belonged to the previous panel don't carry over.
@@ -185,12 +203,44 @@ export class ScreenBuffer {
         c0.glyph = ' ';
     }
     clearFormatTable () { this.fields = []; this.recalcAttributes(); }
-    saveScreen ()       { this.savedCells = this.cells.map(c => ({ ...c })); this.savedFields = [...this.fields]; }
-    restoreScreen ()    {
-        if (!this.savedCells) return;
-        this.cells = this.savedCells.map(o => Object.assign(new Cell(), o));
-        this.fields = [...this.savedFields];
+    saveScreen () {
+        this.savedScreen = {
+            cells: this.cells.map(c => ({ ...c })),
+            fields: this.fields.map(f => ({
+                ...f,
+                fcws: f.fcws.map(pair => [...pair]),
+            })),
+            cursor: this.cursor,
+            pendingCursor: this.pendingCursor,
+            keyboardLocked: this.keyboardLocked,
+            messageLight: this.messageLight,
+            insertMode: this.insertMode,
+            activeAttr: { ...this.activeAttr },
+            extendedAttr: this.extendedAttr ? { ...this.extendedAttr } : null,
+            soh: { ...this.soh, pfBytes: [...this.soh.pfBytes] },
+            enptui: this.enptui.snapshot(),
+        };
+    }
+
+    restoreScreen () {
+        const saved = this.savedScreen;
+        if (!saved) return false;
+        this.cells = saved.cells.map(o => Object.assign(new Cell(), o));
+        this.fields = saved.fields.map(f => ({
+            ...f,
+            fcws: f.fcws.map(pair => [...pair]),
+        }));
+        this.cursor = saved.cursor;
+        this.pendingCursor = saved.pendingCursor;
+        this.keyboardLocked = saved.keyboardLocked;
+        this.messageLight = saved.messageLight;
+        this.insertMode = saved.insertMode;
+        this.activeAttr = { ...saved.activeAttr };
+        this.extendedAttr = saved.extendedAttr ? { ...saved.extendedAttr } : null;
+        this.soh = { ...saved.soh, pfBytes: [...saved.soh.pfBytes] };
+        this.enptui.restore(saved.enptui);
         this.recalcAttributes();
+        return true;
     }
 
     /** Record the latest SOH order's bookkeeping bits. The flag1 reset-
@@ -234,11 +284,14 @@ export class ScreenBuffer {
      *  inherit the active attribute pen, and advance. Attribute cells
      *  are non-display so we step over them defensively. */
     placeByte (b) {
-        const cell = this.cells[this.cursor];
-        if (cell.attributePlace) {
+        let skipped = 0;
+        while (this.cells[this.cursor].attributePlace && skipped < this.size) {
             this.#advance();
-            return this.placeByte(b);
+            skipped++;
         }
+        if (skipped >= this.size)
+            throw new RangeError('5250 display contains no writable data position');
+        const cell = this.cells[this.cursor];
         cell.byte = b;
         cell.glyph = this.ebcdic.toChar(b);
         cell.attributePlace = false;
@@ -348,9 +401,13 @@ export class ScreenBuffer {
         // We follow the IBM convention: `length` is the count of data
         // cells exclusive of the leading attribute byte.
         const start = this.cursor;
+        if (length < 0 || length >= this.size)
+            throw new RangeError(`Invalid 5250 field length ${length}`);
         const desc  = ATTR_BASE[attr] ?? DEFAULT_ATTR_DESC;
         const field = new Field(start, { length, attr, ffw0, ffw1, fcws });
+        this.fields = this.fields.filter(existing => existing.start !== start);
         this.fields.push(field);
+        this.fields.sort((a, b) => a.start - b.start);
 
         const attrCell = this.cells[start];
         attrCell.byte = attr;
@@ -423,6 +480,11 @@ export class ScreenBuffer {
             for (let c = 0; c < this.cols; c++)
                 this.cells[r * this.cols + c] = row[c];
         }
+        for (const field of this.fields) {
+            const moved = this.cells.findIndex(cell => cell.startField && cell.field === field);
+            if (moved >= 0) field.start = moved;
+        }
+        this.fields.sort((a, b) => a.start - b.start);
     }
 
     // ---- input (user typing) -------------------------------------------
@@ -483,7 +545,24 @@ export class ScreenBuffer {
         // in a digits-only field.
         if (!acceptsByShift(b, f.shift)) {
             debug.warn(`typeByte FAIL: byte 0x${b.toString(16)} rejected by shift=${f.shift}`);
+            this.alarm = true;
             return false;
+        }
+
+        if (this.insertMode) {
+            const offset = (here - f.start + this.size) % this.size;
+            const remaining = f.length - offset + 1;
+            const last = (f.start + f.length) % this.size;
+            if (this.cells[last].byte !== 0x00) {
+                this.alarm = true;
+                return false;
+            }
+            for (let n = remaining - 1; n > 0; n--) {
+                const dstIdx = (here + n) % this.size;
+                const srcIdx = (dstIdx - 1 + this.size) % this.size;
+                this.cells[dstIdx].byte = this.cells[srcIdx].byte;
+                this.cells[dstIdx].glyph = this.cells[srcIdx].glyph;
+            }
         }
 
         cell.byte = b;
@@ -492,7 +571,79 @@ export class ScreenBuffer {
         // running pen would inherit it from the field's start attribute
         // anyway.
         f.modified = true;
-        this.#advance();
+        if (f.fer) f.exited = false;
+        const lastData = (f.start + f.length) % this.size;
+        if (here === lastData) {
+            if (f.autoEnter) this.autoEnterRequested = true;
+            else {
+                const next = this.nextInputAfter(f.start);
+                if (next) this.cursor = (next.start + 1) % this.size;
+            }
+        } else {
+            this.#advance();
+        }
+        return true;
+    }
+
+    /** Enforce field-level entry/fill requirements before an AID leaves. */
+    validateForAid () {
+        for (const field of this.fields) {
+            if (field.bypass) continue;
+            let entered = false;
+            let nulls = 0;
+            for (let n = 1; n <= field.length; n++) {
+                const byte = this.cells[(field.start + n) % this.size].byte;
+                if (byte === 0x00) nulls++;
+                else if (byte !== 0x40) entered = true;
+            }
+            if (field.mandatory && !entered)
+                return { field, reason: 'mandatory entry' };
+            if (field.adjust === Adjust.MANDATORY && nulls > 0)
+                return { field, reason: 'mandatory fill' };
+            if (field.fer && field.modified && !field.exited)
+                return { field, reason: 'Field Exit' };
+        }
+        return null;
+    }
+
+    /** Complete the current input field as the physical Field Exit key
+     *  would: apply right adjustment/fill, satisfy FER, then tab onward. */
+    fieldExit () {
+        if (this.keyboardLocked) return false;
+        const field = this.fieldAt(this.cursor);
+        if (!field || field.bypass) {
+            this.alarm = true;
+            return false;
+        }
+
+        const values = [];
+        for (let n = 1; n <= field.length; n++)
+            values.push(this.cells[(field.start + n) % this.size].byte);
+
+        if (field.adjust === Adjust.RIGHT_ZERO
+            || field.adjust === Adjust.RIGHT_BLANK
+            || field.adjust === Adjust.MANDATORY) {
+            let end = values.length;
+            while (end > 0 && (values[end - 1] === 0x00 || values[end - 1] === EBC_SPACE)) end--;
+            const content = values.slice(0, end);
+            const pad = field.adjust === Adjust.RIGHT_BLANK ? EBC_SPACE : 0xF0;
+            values.fill(pad);
+            const offset = values.length - content.length;
+            for (let i = 0; i < content.length; i++) values[offset + i] = content[i];
+            for (let n = 0; n < values.length; n++) {
+                const cell = this.cells[(field.start + 1 + n) % this.size];
+                cell.byte = values[n];
+                cell.glyph = this.ebcdic.toChar(values[n]);
+            }
+            field.modified = true;
+        }
+
+        field.exited = true;
+        if (field.autoEnter) this.autoEnterRequested = true;
+        else {
+            const next = this.nextInputAfter(field.start);
+            if (next) this.cursor = (next.start + 1) % this.size;
+        }
         return true;
     }
 
@@ -585,6 +736,10 @@ export class ScreenBuffer {
         const stops = this.#tabStops();
         if (stops.length === 0) return;
         const current = this.fieldAt(this.cursor);
+        if (current?.fer && current.modified && !current.exited) {
+            this.alarm = true;
+            return;
+        }
         if (current && current.cursorProgress > 0) {
             // Cursor-progression value is the 1-based id of the target
             // SF field. Find the n-th non-bypass field in stream order.
@@ -603,6 +758,11 @@ export class ScreenBuffer {
     backTab () {
         const stops = this.#tabStops();
         if (stops.length === 0) return;
+        const current = this.fieldAt(this.cursor);
+        if (current?.fer && current.modified && !current.exited) {
+            this.alarm = true;
+            return;
+        }
         let prev = null;
         for (const s of stops) {
             if (s < this.cursor) prev = s;
@@ -612,26 +772,32 @@ export class ScreenBuffer {
     }
 
     backspace () {
+        if (this.keyboardLocked) return false;
+        const currentField = this.fieldAt(this.cursor);
+        if (!currentField || currentField.bypass) return false;
         const prev = (this.cursor - 1 + this.size) % this.size;
         const cell = this.cells[prev];
-        if (cell.attributePlace) return;
+        const f = this.fieldAt(prev);
+        if (cell.attributePlace || !f || f !== currentField || f.bypass) return false;
         cell.byte = 0x00;
         cell.glyph = ' ';
-        const f = this.fieldAt(prev);
-        if (f) f.modified = true;
+        f.modified = true;
+        if (f.fer) f.exited = false;
         this.cursor = prev;
+        return true;
     }
 
     // ---- internals -----------------------------------------------------
 
     #advance () { this.cursor = (this.cursor + 1) % this.size; }
 
-    /** Convert 1-based row/col into a buffer index. Out-of-range values
-     *  are clamped silently so a misbehaving host can't crash us. */
+    /** Convert a valid 1-based wire address into a buffer index. */
     #index (row, col) {
-        const r = Math.max(0, Math.min(this.rows - 1, (row | 0) - 1));
-        const c = Math.max(0, Math.min(this.cols - 1, (col | 0) - 1));
-        return r * this.cols + c;
+        const r = row | 0;
+        const c = col | 0;
+        if (r < 1 || r > this.rows || c < 1 || c > this.cols)
+            throw new RangeError(`Invalid 5250 screen address row=${row} col=${col}`);
+        return (r - 1) * this.cols + (c - 1);
     }
 
     /** Re-walk the buffer and re-assign each cell's active attribute

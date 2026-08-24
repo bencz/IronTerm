@@ -52,12 +52,17 @@ export class TelnetCore {
      * @param {string}                      opts.terminalType   IBM-3278-2-E / IBM-3477-FC / ...
      * @param {object}                      [opts.extension] protocol plugin (see contract)
      * @param {number}                      [opts.keepAliveSeconds]  idle interval before NOP (default 120)
+     * @param {number}                      [opts.maxRecordBytes] maximum inbound record (default 1 MiB)
+     * @param {number}                      [opts.maxSubnegotiationBytes] maximum SB body (default 64 KiB)
+     * @param {(message:string)=>void}      [opts.onProtocolError]
      */
-    constructor ({ send, onRecord, onState, onNvt, terminalType, extension, keepAliveSeconds }) {
+    constructor ({ send, onRecord, onState, onNvt, terminalType, extension, keepAliveSeconds,
+                   maxRecordBytes, maxSubnegotiationBytes, onProtocolError }) {
         this.rawSend = send;
         this.onRecord = onRecord;
         this.onState  = onState ?? (() => {});
         this.onNvt    = onNvt   ?? (() => {});
+        this.onProtocolError = onProtocolError ?? (() => {});
         this.terminalType = terminalType ?? '';
         this.ext = extension ?? null;
 
@@ -65,6 +70,19 @@ export class TelnetCore {
         this.sb = null;
         this.iacPending = false;
         this.command = 0;
+        this.discardRecord = false;
+        this.discardSb = false;
+        this.maxRecordBytes = maxRecordBytes ?? (1024 * 1024);
+        this.maxSubnegotiationBytes = maxSubnegotiationBytes ?? (64 * 1024);
+
+        // Telnet options are negotiated independently in each direction.
+        // `local` means we WILL perform the option; `remote` means the
+        // peer WILL perform it. Keeping those states separate prevents
+        // repeated DO/WILL loops and, critically, avoids treating inbound
+        // data as binary merely because the peer asked us to send binary.
+        this.localOptions = new Set();
+        this.remoteOptions = new Set();
+        this.impliedBidirectionalOptions = new Set();
 
         // Negotiated state. Extensions can mutate this on `onOptionEnabled`
         // so the negotiation listener sees a single coherent object.
@@ -80,7 +98,7 @@ export class TelnetCore {
         if (this.ext?.attach) this.ext.attach(this);
 
         this.keepAliveMs    = (keepAliveSeconds ?? 120) * 1000;
-        this.lastSendAt     = Date.now();
+        this.lastActivityAt = Date.now();
         this.keepAliveTimer = setInterval(() => this.#tickKeepAlive(), 30_000);
     }
 
@@ -92,7 +110,7 @@ export class TelnetCore {
 
     /** Wraps the raw send so we can timestamp every outbound packet. */
     send (bytes) {
-        this.lastSendAt = Date.now();
+        this.lastActivityAt = Date.now();
         this.rawSend(bytes);
     }
 
@@ -105,7 +123,7 @@ export class TelnetCore {
     }
 
     #tickKeepAlive () {
-        if (Date.now() - this.lastSendAt < this.keepAliveMs) return;
+        if (Date.now() - this.lastActivityAt < this.keepAliveMs) return;
         this.send(Uint8Array.of(Telnet.IAC, Telnet.NOP));
     }
 
@@ -113,8 +131,13 @@ export class TelnetCore {
 
     /** Feed bytes coming in from the WebSocket. Must be a Uint8Array. */
     feed (bytes) {
+        this.lastActivityAt = Date.now();
+        this.nvtBatch = [];
         for (let i = 0; i < bytes.length; i++)
             this.#feedByte(bytes[i]);
+        if (this.nvtBatch.length > 0)
+            this.onNvt(Uint8Array.from(this.nvtBatch));
+        this.nvtBatch = null;
     }
 
     #feedByte (b) {
@@ -128,28 +151,31 @@ export class TelnetCore {
             if (this.iacPending) {
                 this.iacPending = false;
                 if (b === Telnet.SE) {
-                    this.#handleSubnegotiation(this.sb);
+                    if (!this.discardSb) this.#handleSubnegotiation(this.sb);
                     this.sb = null;
+                    this.discardSb = false;
                 } else if (b === Telnet.IAC) {
-                    this.sb.push(0xFF);             // doubled IAC inside SB
+                    this.#pushSb(0xFF);             // doubled IAC inside SB
                 } else {
                     // Some other IAC inside an SB: per spec, ignore and
                     // keep collecting.
-                    this.sb.push(b);
+                    this.#pushSb(b);
                 }
                 return;
             }
             if (b === Telnet.IAC) { this.iacPending = true; return; }
-            this.sb.push(b);
+            this.#pushSb(b);
             return;
         }
 
         if (this.iacPending) {
             this.iacPending = false;
             switch (b) {
-                case Telnet.IAC:   this.record.push(0xFF); return;     // doubled IAC == data 0xFF
-                case Telnet.EOR:   this.#emitRecord(); return;
-                case Telnet.SB:    this.sb = []; return;
+                case Telnet.IAC:   this.#pushRecord(0xFF); return;     // doubled IAC == data 0xFF
+                case Telnet.EOR:
+                    if (this.#remoteEnabled(TelnetOption.EOR)) this.#emitRecord();
+                    return;
+                case Telnet.SB:    this.sb = []; this.discardSb = false; return;
                 case Telnet.NOP:   return;
                 case Telnet.DO:
                 case Telnet.DONT:
@@ -170,14 +196,41 @@ export class TelnetCore {
         //   - BINARY not negotiated → NVT mode (Telnet ASCII teletype),
         //     used by hosts that show a banner / connection-broker prompt
         //     before switching to the binary data stream.
-        if (this.state.binary) {
-            this.record.push(b);
+        if (this.#remoteEnabled(TelnetOption.BINARY)) {
+            this.#pushRecord(b);
         } else {
-            this.onNvt(Uint8Array.of(b));
+            this.nvtBatch?.push(b);
         }
     }
 
+    #pushRecord (b) {
+        if (this.discardRecord) return;
+        if (this.record.length >= this.maxRecordBytes) {
+            this.record.length = 0;
+            this.discardRecord = true;
+            this.onProtocolError(`Telnet record exceeds ${this.maxRecordBytes} bytes`);
+            return;
+        }
+        this.record.push(b);
+    }
+
+    #pushSb (b) {
+        if (this.discardSb) return;
+        if (this.sb.length >= this.maxSubnegotiationBytes) {
+            this.sb.length = 0;
+            this.discardSb = true;
+            this.onProtocolError(`Telnet subnegotiation exceeds ${this.maxSubnegotiationBytes} bytes`);
+            return;
+        }
+        this.sb.push(b);
+    }
+
     #emitRecord () {
+        if (this.discardRecord) {
+            this.record.length = 0;
+            this.discardRecord = false;
+            return;
+        }
         if (this.record.length === 0) return;
         const bytes = Uint8Array.from(this.record);
         this.record.length = 0;
@@ -197,64 +250,99 @@ export class TelnetCore {
         const known = this.#isCoreOption(opt) || !!this.ext?.isKnownOption?.(opt);
 
         if (verb === Telnet.DO) {
-            const reply = known ? Telnet.WILL : Telnet.WONT;
-            this.#sendBytes([Telnet.IAC, reply, opt]);
-            if (reply === Telnet.WILL) this.#markEnabled(opt);
+            if (!known) {
+                this.#sendBytes([Telnet.IAC, Telnet.WONT, opt]);
+            } else if (!this.localOptions.has(opt)) {
+                this.localOptions.add(opt);
+                this.#sendBytes([Telnet.IAC, Telnet.WILL, opt]);
+                this.#optionChanged(opt, 'local', true);
+            }
             return;
         }
         if (verb === Telnet.DONT) {
-            this.#sendBytes([Telnet.IAC, Telnet.WONT, opt]);
-            this.#markDisabled(opt);
+            if (this.localOptions.delete(opt)) {
+                this.#sendBytes([Telnet.IAC, Telnet.WONT, opt]);
+                this.#optionChanged(opt, 'local', false);
+            }
             return;
         }
         if (verb === Telnet.WILL) {
-            const reply = known ? Telnet.DO : Telnet.DONT;
-            this.#sendBytes([Telnet.IAC, reply, opt]);
-            if (reply === Telnet.DO) this.#markEnabled(opt);
+            if (!known) {
+                this.#sendBytes([Telnet.IAC, Telnet.DONT, opt]);
+            } else if (!this.remoteOptions.has(opt)) {
+                this.remoteOptions.add(opt);
+                this.#sendBytes([Telnet.IAC, Telnet.DO, opt]);
+                this.#optionChanged(opt, 'remote', true);
+            }
             return;
         }
         if (verb === Telnet.WONT) {
-            this.#sendBytes([Telnet.IAC, Telnet.DONT, opt]);
-            this.#markDisabled(opt);
+            if (this.remoteOptions.delete(opt)) {
+                this.#sendBytes([Telnet.IAC, Telnet.DONT, opt]);
+                this.#optionChanged(opt, 'remote', false);
+            }
             return;
         }
     }
 
     #isCoreOption (opt) {
         return opt === TelnetOption.BINARY
+            || opt === TelnetOption.SUPPRESS_GO_AHEAD
             || opt === TelnetOption.EOR
             || opt === TelnetOption.TERMINAL_TYPE;
     }
 
-    #markEnabled (opt) {
-        switch (opt) {
-            case TelnetOption.BINARY:        this.state.binary = true; break;
-            case TelnetOption.EOR:           this.state.eor    = true; break;
-            case TelnetOption.TERMINAL_TYPE: this.state.ttype  = true; break;
-        }
-        this.ext?.onOptionEnabled?.(opt);
+    /** Some negotiated protocols (notably TN3270E) imply BINARY and EOR
+     *  in both directions without separate option commands. */
+    setImpliedBidirectionalOption (opt, enabled) {
+        if (enabled) this.impliedBidirectionalOptions.add(opt);
+        else this.impliedBidirectionalOptions.delete(opt);
+        this.#publishOptionState();
+    }
+
+    #localEnabled (opt) {
+        return this.localOptions.has(opt) || this.impliedBidirectionalOptions.has(opt);
+    }
+
+    #remoteEnabled (opt) {
+        return this.remoteOptions.has(opt) || this.impliedBidirectionalOptions.has(opt);
+    }
+
+    #publishOptionState () {
+        this.state.binary = this.#remoteEnabled(TelnetOption.BINARY);
+        this.state.eor = this.#remoteEnabled(TelnetOption.EOR);
+        this.state.ttype = this.#localEnabled(TelnetOption.TERMINAL_TYPE);
+        this.state.localBinary = this.#localEnabled(TelnetOption.BINARY);
+        this.state.remoteBinary = this.#remoteEnabled(TelnetOption.BINARY);
+        this.state.localEor = this.#localEnabled(TelnetOption.EOR);
+        this.state.remoteEor = this.#remoteEnabled(TelnetOption.EOR);
+        this.state.localSuppressGoAhead = this.#localEnabled(TelnetOption.SUPPRESS_GO_AHEAD);
+        this.state.remoteSuppressGoAhead = this.#remoteEnabled(TelnetOption.SUPPRESS_GO_AHEAD);
         this.onState(this.state);
     }
-    #markDisabled (opt) {
-        switch (opt) {
-            case TelnetOption.BINARY:        this.state.binary = false; break;
-            case TelnetOption.EOR:           this.state.eor    = false; break;
-            case TelnetOption.TERMINAL_TYPE: this.state.ttype  = false; break;
-        }
-        this.ext?.onOptionDisabled?.(opt);
-        this.onState(this.state);
+
+    #optionChanged (opt, direction, enabled) {
+        // Compatibility fields describe the direction consumed by the UI:
+        // inbound BINARY/EOR and our locally supplied terminal type.
+        if (enabled) this.ext?.onOptionEnabled?.(opt, direction);
+        else this.ext?.onOptionDisabled?.(opt, direction);
+        this.#publishOptionState();
     }
 
     // ---- subnegotiation -----------------------------------------------
 
     #handleSubnegotiation (data) {
         if (data.length === 0) return;
-        const opt = data[0];
+        // The byte-state machine accumulates into a growable Array, but
+        // protocol extensions operate on typed byte views (`subarray`,
+        // zero-copy slices). Normalise once at this boundary.
+        const bytes = Uint8Array.from(data);
+        const opt = bytes[0];
         if (opt === TelnetOption.TERMINAL_TYPE) {
-            this.#handleTtype(data);
+            this.#handleTtype(bytes);
             return;
         }
-        this.ext?.handleSubnegotiation?.(opt, data);
+        this.ext?.handleSubnegotiation?.(opt, bytes);
     }
 
     #handleTtype (data) {
@@ -282,6 +370,13 @@ export class TelnetCore {
             ? this.ext.wrapOutbound(record)
             : record;
 
+        this.sendFramedRecord(wrapped);
+    }
+
+    /** Frame an already protocol-wrapped record. Extensions use this for
+     *  control records such as TN3270E RESPONSE, which must not pass through
+     *  wrapOutbound a second time. */
+    sendFramedRecord (wrapped) {
         // Double IAC bytes inside the payload.
         let doubles = 0;
         for (let i = 0; i < wrapped.length; i++)

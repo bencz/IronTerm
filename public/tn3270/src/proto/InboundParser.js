@@ -71,7 +71,7 @@ export class InboundParser {
             // Unknown top-level command - bubble up so the Terminal can
             // emit a NEGATIVE-RESPONSE if the host requested one.
             const err = new Error(`Unknown 3270 command 0x${cmd.toString(16)}`);
-            err.senseCode = 0x10;     // function not supported
+            err.senseCode = 0x00;     // command reject
             throw err;
         }
     }
@@ -130,19 +130,23 @@ export class InboundParser {
 
             switch (b) {
                 case Order.SBA: {
-                    const addr = BufferAddress.decode(record[p + 1], record[p + 2]);
+                    this.#require(record, p, 3, 'SBA');
+                    const addr = this.#address(record[p + 1], record[p + 2], 'SBA');
                     buf.moveTo(addr);
                     p += 3;
                     break;
                 }
                 case Order.SF: {
+                    this.#require(record, p, 2, 'SF');
                     buf.startField(record[p + 1]);
                     buf.moveRight();
                     p += 2;
                     break;
                 }
                 case Order.SFE: {
+                    this.#require(record, p, 2, 'SFE');
                     const pairs = record[p + 1] & 0xFF;
+                    this.#require(record, p, 2 + pairs * 2, 'SFE attribute pairs');
                     let q = p + 2;
                     let faByte = 0x00;
                     // Pass 1: find FA among the pairs.
@@ -168,6 +172,7 @@ export class InboundParser {
                     break;
                 }
                 case Order.SA: {
+                    this.#require(record, p, 3, 'SA');
                     buf.setPenAttribute(record[p + 1], record[p + 2]);
                     p += 3;
                     break;
@@ -175,7 +180,9 @@ export class InboundParser {
                 case Order.MF: {
                     // Modify Field - replaces attrs on the FA at current
                     // pen position, then advances pen by 1 (per spec).
+                    this.#require(record, p, 2, 'MF');
                     const pairs = record[p + 1] & 0xFF;
+                    this.#require(record, p, 2 + pairs * 2, 'MF attribute pairs');
                     let q = p + 2;
                     for (let i = 0; i < pairs; i++)
                         buf.modifyFieldAttribute(record[q + i * 2], record[q + i * 2 + 1]);
@@ -199,10 +206,12 @@ export class InboundParser {
                     break;
                 }
                 case Order.RA: {
-                    const stop = BufferAddress.decode(record[p + 1], record[p + 2]);
+                    this.#require(record, p, 4, 'RA');
+                    const stop = this.#address(record[p + 1], record[p + 2], 'RA');
                     let charByte;
                     let consumed;
                     if (record[p + 3] === Order.GE) {
+                        this.#require(record, p, 5, 'RA GE');
                         charByte = record[p + 4];
                         consumed = 5;
                     } else {
@@ -228,7 +237,8 @@ export class InboundParser {
                     // field we crossed - IBM spec says EUA implicitly
                     // re-modifies-then-clears, so the field appears
                     // un-modified after the order.
-                    const stop = BufferAddress.decode(record[p + 1], record[p + 2]);
+                    this.#require(record, p, 3, 'EUA');
+                    const stop = this.#address(record[p + 1], record[p + 2], 'EUA');
                     let safety = buf.size + 1;
                     const touched = new Set();
                     while (buf.position !== stop && safety-- > 0) {
@@ -255,6 +265,7 @@ export class InboundParser {
                 case Order.GE: {
                     // Graphics Escape - emit the next byte as-is. We don't
                     // have a graphics font; render the EBCDIC glyph.
+                    this.#require(record, p, 2, 'GE');
                     buf.write(record[p + 1]);
                     nextPrevText = true;
                     p += 2;
@@ -272,14 +283,40 @@ export class InboundParser {
         }
     }
 
+    #require (record, offset, count, label) {
+        if (offset + count <= record.length) return;
+        const err = new Error(`Truncated 3270 ${label} at offset ${offset}`);
+        err.senseCode = 0x02;
+        throw err;
+    }
+
+    #address (a, b, label) {
+        const address = BufferAddress.decode(a, b);
+        if (address >= this.buffer.size) {
+            const err = new Error(`Illegal 3270 ${label} buffer address ${address}`);
+            err.senseCode = 0x02;
+            throw err;
+        }
+        return address;
+    }
+
     // ---- WSF -----------------------------------------------------------
 
     #processWriteStructuredField (record, start) {
         let p = start;
         const max = record.length;
-        while (p + 2 <= max) {
+        while (p < max) {
+            if (p + 3 > max) {
+                const err = new Error(`Truncated 3270 structured-field header at offset ${p}`);
+                err.senseCode = 0x02;
+                throw err;
+            }
             const size = ((record[p] & 0xFF) << 8) | (record[p + 1] & 0xFF);
-            if (size < 3 || p + size > max) break;
+            if (size < 3 || p + size > max) {
+                const err = new Error(`Invalid 3270 structured-field length ${size} at offset ${p}`);
+                err.senseCode = 0x02;
+                throw err;
+            }
             const sfType = record[p + 2];
             const body = record.subarray(p + 3, p + size);
             this.#processSf(sfType, body);
@@ -302,11 +339,14 @@ export class InboundParser {
             case Sf.OUTBOUND_3270DS: {
                 // Wrapper: the second byte is partition ID, the rest is a
                 // normal W/EW/EWA/EAU command - feed it back through.
-                if (body.length >= 1) {
-                    const partition = body[0]; void partition;
-                    const inner = body.subarray(1);
-                    this.process(inner);
+                if (body.length < 2) {
+                    const err = new Error('Truncated Outbound 3270DS structured field');
+                    err.senseCode = 0x02;
+                    throw err;
                 }
+                const partition = body[0]; void partition;
+                const inner = body.subarray(1);
+                this.process(inner);
                 break;
             }
             case Sf.ERASE_RESET:
@@ -334,9 +374,11 @@ export class InboundParser {
                 if (this.indFile) this.indFile.process(body);
                 break;
             default:
-                // Unknown structured field - quietly ignore so the host
-                // doesn't disconnect us.
-                break;
+                {
+                    const err = new Error(`Unsupported 3270 structured field 0x${type.toString(16)}`);
+                    err.senseCode = 0x00;
+                    throw err;
+                }
         }
     }
 }

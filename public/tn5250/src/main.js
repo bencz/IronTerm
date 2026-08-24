@@ -5,12 +5,7 @@
 import { Terminal } from './Terminal.js';
 import { Profiles } from '../../shared/src/ui/Profiles.js';
 import { aidFromName, Models } from './proto/Constants.js';
-
-function buildWsUrl (raw, port) {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    return trimmed.replaceAll('{port}', encodeURIComponent(port));
-}
+import { buildWebSocketUrl } from '../../shared/src/net/WebSocketUrl.js';
 
 function main () {
     const $ = (id) => document.getElementById(id);
@@ -39,9 +34,13 @@ function main () {
     };
     const nvtEl = $('nvt');
 
+    const updateButtons = (state) => {
+        connectBtn.disabled = state === 'connecting' || state === 'connected';
+        disconnectBtn.disabled = state === 'disconnected' || state === 'error';
+    };
     const terminal = new Terminal({ canvas, statusEl, oiaEls, nvtEl,
-                                     codePage: codePageEl.value,
-                                     modelKey: modelEl.value });
+        codePage: codePageEl.value, modelKey: modelEl.value,
+        onConnectionState: updateButtons });
     window.terminal = terminal;
 
     new Profiles(
@@ -59,9 +58,18 @@ function main () {
     });
 
     connectBtn.addEventListener('click', () => {
-        const url = buildWsUrl(bridgeEl.value, portEl.value);
-        if (!url) {
-            terminal.setStatus('error: bridge URL is required', 'error');
+        const hasPassword = passwordEl.value.length > 0;
+        if (hasPassword && !userEl.value.trim()) {
+            terminal.setStatus('error: USER is required with a bypass password', 'error');
+            return;
+        }
+        let url;
+        try {
+            url = buildWebSocketUrl(bridgeEl.value, portEl.value, {
+                hasSensitiveCredentials: hasPassword,
+            });
+        } catch (err) {
+            terminal.setStatus(`error: ${err.message}`, 'error');
             return;
         }
         terminal.setModel(modelEl.value);
@@ -75,26 +83,25 @@ function main () {
             charset:  '697',
         };
         if (userEl.value.trim())     envOptions.user     = userEl.value.trim().toUpperCase();
-        if (passwordEl.value)        envOptions.password = passwordEl.value;
+        if (hasPassword)             envOptions.password = passwordEl.value;
         terminal.setEnvOptions(envOptions);
 
         terminal.connect({ url });
-        connectBtn.disabled = true;
-        disconnectBtn.disabled = false;
+        passwordEl.value = '';
     });
 
     disconnectBtn.addEventListener('click', async () => {
         await terminal.disconnect();
-        connectBtn.disabled = false;
-        disconnectBtn.disabled = true;
     });
 
-    document.querySelectorAll('.aid-bar button').forEach(btn => {
+    document.querySelectorAll('.aid-bar button[data-aid]').forEach(btn => {
         btn.addEventListener('click', () => {
             const code = aidFromName(btn.dataset.aid);
             if (code !== null) terminal.sendAid(code);
         });
     });
+    $('attnBtn')?.addEventListener('click', () => terminal.sendAttention());
+    $('sysreqBtn')?.addEventListener('click', () => terminal.sendSystemRequest());
 
     // Populate model select from the Models table so we stay in sync.
     void Models;

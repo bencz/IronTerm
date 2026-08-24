@@ -3,6 +3,8 @@
 .github
 .vscode
 .idea
+.agents
+.codex
 README.md
 LICENSE
 Dockerfile
@@ -10,4 +12,7 @@ Dockerfile
 **/.DS_Store
 **/Thumbs.db
 node_modules
+test
+scripts
 *.log
+npm-debug.log

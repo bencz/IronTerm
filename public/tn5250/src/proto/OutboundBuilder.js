@@ -58,7 +58,7 @@ export class OutboundBuilder {
      *      <row> <col> <aid> [<SBA><row><col><field-data>]*
      *  Each modified field is preceded by an SBA pointing at its first
      *  data cell (one past the SF attribute byte). */
-    buildAidResponse (aid) {
+    buildAidResponse (aid, { includeAll = false, preserveNulls = false } = {}) {
         const out = [];
         // Cursor row/col are 1-based on the wire.
         const row = (this.screen.cursor / this.screen.cols | 0) + 1;
@@ -70,8 +70,8 @@ export class OutboundBuilder {
         if (!this.#isShortRead(aid)) {
             for (const f of this.screen.fields) {
                 if (f.bypass) continue;
-                if (!f.modified) continue;
-                this.#emitField(out, f);
+                if (!includeAll && !f.modified) continue;
+                this.#emitField(out, f, { preserveNulls });
             }
         }
         return Uint8Array.from(out);
@@ -80,17 +80,22 @@ export class OutboundBuilder {
     /** For Read MDT / Read Input we don't include cursor + AID -
      *  the host invited us so it knows where we are. The payload is
      *  just the SBA-delimited field stream. */
-    buildReadResponse () {
+    buildReadResponse ({ includeAll = false, aid = null, preserveNulls = false } = {}) {
         const out = [];
+        if (aid !== null) {
+            const row = (this.screen.cursor / this.screen.cols | 0) + 1;
+            const col = (this.screen.cursor % this.screen.cols) + 1;
+            out.push(row, col, aid & 0xFF);
+        }
         for (const f of this.screen.fields) {
             if (f.bypass) continue;
-            if (!f.modified) continue;
-            this.#emitField(out, f);
+            if (!includeAll && !f.modified) continue;
+            this.#emitField(out, f, { preserveNulls });
         }
         return Uint8Array.from(out);
     }
 
-    #emitField (out, f) {
+    #emitField (out, f, { preserveNulls = false } = {}) {
         const startData = (f.start + 1) % this.screen.size;
         const row = (startData / this.screen.cols | 0) + 1;
         const col = (startData % this.screen.cols) + 1;
@@ -98,7 +103,7 @@ export class OutboundBuilder {
 
         // Collect the field's data bytes first. `f.length` is the count
         // of data cells (per IBM SF order semantics).
-        const bytes = new Array(f.length).fill(EBC_SPACE);
+        const bytes = new Array(f.length).fill(preserveNulls ? 0x00 : EBC_SPACE);
         for (let i = 0; i < f.length; i++) {
             const idx = (startData + i) % this.screen.size;
             const cell = this.screen.cells[idx];
@@ -107,7 +112,7 @@ export class OutboundBuilder {
                 bytes.length = i;
                 break;
             }
-            bytes[i] = cell.byte === 0 ? EBC_SPACE : cell.byte;
+            bytes[i] = preserveNulls ? cell.byte : (cell.byte === 0 ? EBC_SPACE : cell.byte);
         }
 
         // Apply field-level right-adjust / zero-fill before transmit.
@@ -146,21 +151,17 @@ export class OutboundBuilder {
 
     // ---- Query response (RFC 1205 §5.3) -------------------------------
 
-    /** 64-byte Query reply. Byte layout per the IBM 5250 reference.
-     *  `enhanced=true` lights up the ENPTUI capability + window-headers
-     *  bits; the actual primitives are decoded by enptui/WdsfDecoder.js. */
-    buildQueryResponse (enhanced = true) {
-        const a = new Uint8Array(64);
+    /** Query reply through byte 60 as defined by RFC 1205. Capabilities
+     *  are derived from the selected model and only implemented features
+     *  are advertised. */
+    buildQueryResponse ({ modelKey = '3179-2', enhanced = false } = {}) {
+        const a = new Uint8Array(61);
         a[0] = 0x00;                // cursor row (0 = none in a WSF reply)
         a[1] = 0x00;                // cursor col
         a[2] = 0x88;                // inbound write-structured-field AID
-        // Segment length field. Per IBM 5250 ref the value is the count
-        // of bytes from the length field through the end of the segment
-        // (i.e. 64 - 3 = 61 bytes). Some hosts ship 0x0044 = 68 for a
-        // 74-byte GDS frame, but our payload IS the 64-byte frame so 61 is the
-        // value that matches the byte count emitted.
+        // Length counts bytes 3..60 inclusive.
         a[3] = 0x00;
-        a[4] = 61;
+        a[4] = 0x3A;
         a[5] = 0xD9;                // command class
         a[6] = 0x70;                // command type = Query
         a[7] = 0x80;                // flag byte
@@ -171,26 +172,27 @@ export class OutboundBuilder {
         a[12] = 0x00;
         // 13-28 reserved (zeroed by Uint8Array initialiser)
         a[29] = 0x01;               // device type 0x01 = 5250 emulator
-        // Device model EBCDIC string: "3179002" for a colour SB session
-        // so PUB400 reports the device as a 3179-2 (the only SB model
-        // IBM treats as "ENPTUI-capable" without extra negotiation).
-        a[30] = 0xF3; a[31] = 0xF1; a[32] = 0xF7;   // 3 1 7
-        a[33] = 0xF9; a[34] = 0xF0; a[35] = 0xF0;   // 9 0 0
-        a[36] = 0xF2;                               // 2
+        const modelIds = {
+            '5251-11': '5251011', '5291-1': '5291001', '5292-2': '5292002',
+            '3196-A1': '31960A1', '3179-2': '3179002', '3180-2': '3180002',
+            '3477-FC': '34770FC', '3477-FG': '34770FG',
+        };
+        const modelId = this.screen.ebcdic.encode(modelIds[modelKey] ?? modelIds['3179-2']);
+        a.set(modelId, 30);
         a[37] = 0x01;               // keyboard id
         a[38] = 0x01;               // extended keyboard id
         a[39] = 0x00;               // reserved
         a[40] = 0x00; a[41] = 0x24; a[42] = 0x24; a[43] = 0x00;  // serial
         a[44] = 0x01; a[45] = 0xF4;  // max display fields = 500
         // 46-48: reserved
-        a[49] = 0x70; a[50] = 0x12;  // controller display capability
-        // Bytes 53/54 advertise enhanced/ENPTUI support:
-        //   0x0F / 0xC8 = full ENPTUI (windows, selection fields, push
-        //                 buttons, scroll bars, headers/footers, grids)
-        a[53] = enhanced ? 0x0F : 0x00;
-        a[54] = enhanced ? 0xC8 : 0x00;
-        a[60] = 0x7B;               // reserved; constant on hardware
-        a[61] = 0x11;               // model byte - 24x80 = 0x11 (27x132 = 0x31)
+        // Move Cursor + Read MDT Immediate Alternate are implemented.
+        a[49] = 0x03;
+        const large = this.screen.rows > 24 || this.screen.cols > 80;
+        const color = ['5292-2', '3179-2', '3477-FC'].includes(modelKey);
+        a[50] = (large ? 0x30 : 0x10) | (color ? 0x01 : 0x00);
+        // Enhanced graphics is model/caller-controlled. Terminal enables
+        // it only for the ENPTUI-capable 5292-2 profile.
+        a[53] = enhanced ? 0x20 : 0x00;
         return a;
     }
 
@@ -209,6 +211,18 @@ export class OutboundBuilder {
                 out[i] = cell.byte === 0 ? 0x40 : cell.byte;
             }
         }
+        return out;
+    }
+
+    /** RFC 1205 Save Screen response: ESC Restore-Screen followed by
+     *  the complete screen image. The host later returns this exact
+     *  payload in a Restore Screen operation. */
+    buildSaveScreenResponse () {
+        const image = this.buildReadScreenResponse();
+        const out = new Uint8Array(2 + image.length);
+        out[0] = 0x04;                  // command escape
+        out[1] = 0x12;                  // Restore Screen command
+        out.set(image, 2);
         return out;
     }
 

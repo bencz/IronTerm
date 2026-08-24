@@ -21,7 +21,7 @@
 //     0x23  ROLL  scroll partition          rare in signon
 //     0x02  SAVE  Save Screen
 //     0x12  RST   Restore Screen
-//     0xF3  WSF   Write Structured Field    Query / ENPTUI (Phase 2b)
+//     0xF3  WSF   Write Structured Field    Query / station controls
 //
 // Orders inside WTD / WEC payloads:
 //     0x01 SOH    Start of Header
@@ -63,6 +63,10 @@ export class InboundParser {
         this.readPending  = false;
         this.readType     = 0x00;     // 0x42 read-input, 0x52 read-MDT
         this.invited      = false;
+        this.readImmediateRequested = false;
+        this.readScreenRequested = false;
+        this.queryRequested = false;
+        this.queryStationStateRequested = false;
 
         // Inbound record pointer (parser-local, reset per record).
         this.buf = null;
@@ -140,9 +144,9 @@ export class InboundParser {
                     // that selects the alternate screen size. Per the
                     // IBM 5250 reference only 0x00 is valid; anything else is
                     // an error condition (we surface as a warning).
-                    const param = this.pos < this.buf.length ? this.#u8() : 0;
+                    const param = this.#u8();
                     if (param !== 0x00) {
-                        debug.warn(`CUA with unsupported param 0x${param.toString(16)} — ignoring resize`);
+                        throw this.#error(`CUA with invalid parameter 0x${param.toString(16)}`);
                     }
                     this.screen.clearUnit();
                     break;
@@ -151,10 +155,10 @@ export class InboundParser {
                 case Cmd.READ_INPUT_FIELDS:          this.#read(0x42); break;
                 case Cmd.READ_MDT_FIELDS:            this.#read(0x52); break;
                 case Cmd.READ_MDT_IMMEDIATE_ALT:
-                    // ALT immediate also has a 1-byte readType param.
-                    if (this.pos < this.buf.length) this.#u8();
+                    // RFC 1205: no control characters follow 0x83; return
+                    // modified fields immediately with AID 0x00.
                     this.readType    = 0x83;
-                    this.readPending = true;
+                    this.readImmediateRequested = true;
                     break;
                 case Cmd.READ_SCREEN_IMMEDIATE:
                 case Cmd.READ_SCREEN_TO_PRINT:
@@ -176,18 +180,29 @@ export class InboundParser {
                     this.screen.restoreScreen(); return;
                 case Cmd.ROLL:                       this.#roll(); break;
                 default:
-                    // Unknown command. Log and bail rather than trash
-                    // the rest of the stream.
-                    debug.warn(`unknown command 0x${cmd.toString(16).padStart(2,'0')} at offset ${this.pos - 1}`);
-                    return;
+                    throw this.#error(`unknown 5250 command 0x${cmd.toString(16).padStart(2,'0')} at offset ${this.pos - 1}`);
             }
         }
     }
 
     // ---- byte cursor ---------------------------------------------------
 
-    #u8 ()  { return this.buf[this.pos++] & 0xFF; }
-    #peek () { return this.buf[this.pos] & 0xFF; }
+    #error (message) {
+        const error = new Error(message);
+        error.negativeResponse = true;
+        return error;
+    }
+
+    #u8 ()  {
+        if (this.pos >= this.buf.length)
+            throw this.#error(`truncated 5250 data at offset ${this.pos}`);
+        return this.buf[this.pos++] & 0xFF;
+    }
+    #peek () {
+        if (this.pos >= this.buf.length)
+            throw this.#error(`truncated 5250 data at offset ${this.pos}`);
+        return this.buf[this.pos] & 0xFF;
+    }
     #u16 () {
         const hi = this.#u8();
         const lo = this.#u8();
@@ -218,7 +233,11 @@ export class InboundParser {
                     // orders or attributes. Per the IBM 5250 reference,
                     // each byte is treated like a plain data byte.
                     const len = this.#u16();
-                    for (let i = 0; i < len && this.pos < this.buf.length; i++) {
+                    if (this.pos + len > this.buf.length)
+                        throw this.#error(`TD length ${len} exceeds remaining data`);
+                    if (this.screen.cursor + len > this.screen.size)
+                        throw this.#error(`TD length ${len} overwrites end of display`);
+                    for (let i = 0; i < len; i++) {
                         this.screen.placeByte(this.#u8());
                     }
                     break;
@@ -258,13 +277,11 @@ export class InboundParser {
                     // it walks the segment chain itself.
                     const segLen = this.#u16();
                     const start  = this.pos - 2;
-                    const end    = Math.min(start + segLen, this.buf.length);
+                    if (segLen < 4 || start + segLen > this.buf.length)
+                        throw this.#error(`invalid WTDSF segment length ${segLen}`);
+                    const end    = start + segLen;
                     const body   = this.buf.subarray(start, end);
-                    try {
-                        decodeWdsf(body, this.screen);
-                    } catch (err) {
-                        debug.warn('enptui decoder error:', err);
-                    }
+                    decodeWdsf(body, this.screen);
                     this.pos = end;
                     break;
                 }
@@ -337,7 +354,7 @@ export class InboundParser {
         // screen for the OutboundBuilder / Terminal to consult.
         const len = this.#u8();
         const end = this.pos + len;
-        if (end > this.buf.length) { this.pos = this.buf.length; return; }
+        if (end > this.buf.length) throw this.#error(`SOH length ${len} exceeds remaining data`);
 
         const flag1 = (this.pos < end) ? this.#u8() : 0;
         // Per the IBM 5250 reference: SOH byte layout
@@ -384,8 +401,10 @@ export class InboundParser {
         // of the WTD stream).
         const row    = this.#u8();
         const col    = this.#u8();
-        const length = this.pos < this.buf.length ? this.#u8() : 0;
-        for (let i = 0; i < length - 1 && this.pos < this.buf.length; i++) {
+        const length = this.#u8();
+        if (length < 1 || this.pos + length - 1 > this.buf.length)
+            throw this.#error(`invalid EA attribute-plane length ${length}`);
+        for (let i = 0; i < length - 1; i++) {
             this.#u8();
         }
         this.screen.eraseToAddress(row, col);
@@ -453,16 +472,18 @@ export class InboundParser {
         //   0xD9 0x00 - Define Audit Window Table
         //   0xD9 0x01 - Read Text Screen
         //
-        // Anything we don't implement, we acknowledge silently so the
-        // host's record completes cleanly; only Query needs a reply.
+        // Unsupported structures are rejected so the host does not wait
+        // indefinitely for a response we cannot represent correctly.
         while (this.pos < this.buf.length) {
-            if (this.pos + 4 > this.buf.length) return;
+            if (this.pos + 4 > this.buf.length)
+                throw this.#error(`truncated WSF segment at offset ${this.pos}`);
             const len = this.#u16();
-            if (len < 4) return;
+            if (len < 4 || this.pos - 2 + len > this.buf.length)
+                throw this.#error(`invalid WSF segment length ${len}`);
             const cls  = this.#u8();
             const type = this.#u8();
             const segEnd = this.pos - 4 + len;       // start was len bytes back
-            const payload = this.buf.subarray(this.pos, Math.min(segEnd, this.buf.length));
+            const payload = this.buf.subarray(this.pos, segEnd);
 
             if (cls === 0xD9 && type === 0x70) {
                 this.queryRequested = true;
@@ -483,9 +504,9 @@ export class InboundParser {
                 this.screen.clearUnit();
                 this.screen.clearFormatTable();
             } else {
-                debug.warn(`WSF unknown (cls=0x${cls.toString(16)} type=0x${type.toString(16)} len=${len}) — acknowledged`);
+                throw this.#error(`unsupported WSF class/type 0x${cls.toString(16)}/0x${type.toString(16)}`);
             }
-            this.pos = Math.min(segEnd, this.buf.length);
+            this.pos = segEnd;
         }
     }
 

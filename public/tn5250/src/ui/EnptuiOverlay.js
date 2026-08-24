@@ -8,10 +8,10 @@
 //
 // All colour lookups go through ./theme.js.
 
-import { ConstructKind, isSingleSelect } from '../proto/enptui/Constants.js';
+import { ConstructKind } from '../proto/enptui/Constants.js';
 import { AttrIndex } from '../proto/enptui/primitives/SelectionField.js';
 import { ATTR_BASE } from '../proto/Constants.js';
-import { COLOR } from './theme.js';
+import { COLOR, TERMINAL_FONT } from './theme.js';
 
 export class EnptuiOverlay {
     /** @param {import('../display/ScreenBuffer.js').ScreenBuffer} screen */
@@ -38,7 +38,6 @@ export class EnptuiOverlay {
                 // controller fires AIDs when the user clicks inside them.
             }
         }
-        void isSingleSelect;        // imported for future use
     }
 
     /** Draw the grid separator lines from a host-defined construct.
@@ -125,7 +124,7 @@ export class EnptuiOverlay {
                                      : (COLOR[desc?.fg] ?? COLOR.white);
             const bg = desc?.reverse ? (COLOR[desc.fg] ?? COLOR.white)
                                      : (COLOR[desc?.bg] ?? COLOR.black);
-            ctx.font = `${fontSize}px "IBM Plex Mono", monospace`;
+            ctx.font = `${fontSize}px ${TERMINAL_FONT}`;
             ctx.textBaseline = 'middle';
             const txt = ' ' + info.text.trimEnd() + ' ';
             const txtW = txt.length * cellWidth;
@@ -169,7 +168,7 @@ export class EnptuiOverlay {
         const focusedIdx = (focused && focused.construct === sel) ? focused.index : -1;
 
         ctx.save();
-        ctx.font = `${fontSize}px "IBM Plex Mono", monospace`;
+        ctx.font = `${fontSize}px ${TERMINAL_FONT}`;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'center';
 
@@ -328,7 +327,7 @@ export class EnptuiOverlay {
                 ctx.fillStyle = frameColor;
                 ctx.fillRect(x, y, wpx, hpx);
                 ctx.fillStyle = '#000';
-                ctx.font = `${fontSize}px "IBM Plex Mono", monospace`;
+                ctx.font = `${fontSize}px ${TERMINAL_FONT}`;
                 ctx.textBaseline = 'middle';
                 ctx.textAlign = 'left';
                 for (let k = 0; k < pb.textSize; k++) {

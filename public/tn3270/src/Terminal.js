@@ -32,9 +32,11 @@ function toFilename (raw) {
 }
 
 export class Terminal {
-    constructor ({ canvas, statusEl, oiaEls, nvtEl, codePage = 'CP037' }) {
+    constructor ({ canvas, statusEl, oiaEls, nvtEl, codePage = 'CP037', onConnectionState }) {
         this.canvas = canvas;
         this.statusEl = statusEl;
+        this.statusRevision = 0;
+        this.onConnectionState = onConnectionState ?? (() => {});
 
         this.modelKey = 2;
         this.codePage = codePage;
@@ -124,6 +126,7 @@ export class Terminal {
         this.renderer.resize();
         this.draw();
         this.setStatus('connecting…', 'connecting');
+        this.onConnectionState('connecting');
         this.oia.setConnection('connecting');
         this.oia.setModel('-');
         this.nvt.clear();
@@ -141,16 +144,19 @@ export class Terminal {
             onOpen:  () => {
                 this.setStatus('connected', 'connected');
                 this.oia.setConnection('connected');
+                this.onConnectionState('connected');
             },
-            onData:  (b) => this.telnet.feed(b),
+            onData:  (b) => this.telnet?.feed(b),
             onClose: (reason) => {
                 this.setStatus(`disconnected: ${reason}`, 'disconnected');
                 this.oia.setConnection('disconnected');
                 this.cleanup();
+                this.onConnectionState('disconnected');
             },
             onError: (err) => {
                 this.setStatus(`error: ${err}`, 'error');
                 this.oia.setConnection('error');
+                this.onConnectionState('error');
             },
         });
         try {
@@ -159,6 +165,7 @@ export class Terminal {
             this.setStatus(`error: ${err}`, 'error');
             this.oia.setConnection('error');
             this.cleanup();
+            this.onConnectionState('error');
         }
     }
 
@@ -168,6 +175,7 @@ export class Terminal {
         this.cleanup();
         this.setStatus('disconnected', 'disconnected');
         this.oia.setConnection('disconnected');
+        this.onConnectionState('disconnected');
     }
 
     cleanup () {
@@ -259,6 +267,13 @@ export class Terminal {
 
     sendAid (aidByte) {
         if (!this.telnet) return;
+        if (this.screen.keyboardLocked) {
+            this.screen.alarm = true;
+            this.tryBeep();
+            this.oia.flashAlarm();
+            this.flashStatus('keyboard locked by host', 'error', 1200);
+            return;
+        }
         // Pre-flight: if any unprotected field has a Validation attr that
         // isn't satisfied, the real 3278 refuses to transmit and parks
         // the cursor on the offending field. Do the same - saves an
@@ -335,6 +350,7 @@ export class Terminal {
     }
 
     setStatus (text, cls) {
+        this.statusRevision++;
         this.statusEl.textContent = text;
         this.statusEl.className = cls;
     }
@@ -342,7 +358,10 @@ export class Terminal {
         const prev = this.statusEl.textContent;
         const prevCls = this.statusEl.className;
         this.setStatus(text, cls);
-        setTimeout(() => this.setStatus(prev, prevCls), ms);
+        const revision = this.statusRevision;
+        setTimeout(() => {
+            if (this.statusRevision === revision) this.setStatus(prev, prevCls);
+        }, ms);
     }
 
     // ---- IND$FILE bridge ---------------------------------------------
@@ -433,15 +452,32 @@ export class Terminal {
         input.style.display = 'none';
         document.body.appendChild(input);
         return await new Promise((resolve) => {
+            const removeInput = () => {
+                if (input.isConnected) document.body.removeChild(input);
+            };
             input.addEventListener('change', async () => {
                 const file = input.files?.[0];
-                document.body.removeChild(input);
+                removeInput();
                 if (!file) { resolve(null); return; }
-                const bytes = new Uint8Array(await file.arrayBuffer());
-                this.indFile.queueUpload(bytes, file.name);
-                this.oia.setTransfer('queued', '⇡');
-                this.flashStatus(`queued ${file.name} (${bytes.length.toLocaleString()} B). On TSO: IND$FILE PUT dataset`, 'connected', 4000);
-                resolve(file);
+                if (file.size > this.indFile.maxFileBytes) {
+                    this.flashStatus(`file exceeds IND$FILE limit (${this.indFile.maxFileBytes.toLocaleString()} B)`, 'error', 3000);
+                    resolve(null);
+                    return;
+                }
+                try {
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    this.indFile.queueUpload(bytes, file.name);
+                    this.oia.setTransfer('queued', '⇡');
+                    this.flashStatus(`queued ${file.name} (${bytes.length.toLocaleString()} B). On TSO: IND$FILE PUT dataset`, 'connected', 4000);
+                    resolve(file);
+                } catch (err) {
+                    this.flashStatus(`could not read file: ${err.message}`, 'error', 3000);
+                    resolve(null);
+                }
+            }, { once: true });
+            input.addEventListener('cancel', () => {
+                removeInput();
+                resolve(null);
             }, { once: true });
             input.click();
         });

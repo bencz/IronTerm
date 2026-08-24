@@ -127,7 +127,8 @@ function dataRecord (chunk) {
 /** State + protocol driver ----------------------------------------- */
 
 export class IndFile {
-    constructor () {
+    constructor ({ maxFileBytes = 64 * 1024 * 1024 } = {}) {
+        this.maxFileBytes = maxFileBytes;
         this.reset();
         // Hooks for the Terminal: notified on transfer lifecycle events.
         this.onProgress = null;        // ({direction, bytes}) => void
@@ -169,7 +170,10 @@ export class IndFile {
      *  start until the host sends OPEN - at which point we'll start
      *  feeding chunks in response to upload-request records. */
     queueUpload (bytes, fileName) {
-        this.uploadBuffer = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        const upload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        if (upload.byteLength > this.maxFileBytes)
+            throw new RangeError(`IND$FILE upload exceeds ${this.maxFileBytes} bytes`);
+        this.uploadBuffer = upload;
         this.uploadOffset = 0;
         this.uploadFileName = fileName ?? null;
     }
@@ -243,14 +247,21 @@ export class IndFile {
             // Only the DATA record (0xC0) has a different length encoding -
             // 5-byte header where bytes 3-4 are total length.
             if (tag === REC.DATA) {
+                if (p + 5 > body.length)
+                    throw new Error(`Truncated IND$FILE DATA header at offset ${p}`);
                 const total = ((body[p + 3] & 0xFF) << 8) | (body[p + 4] & 0xFF);
-                const end = Math.min(p + total, body.length);
+                if (total < 5 || p + total > body.length)
+                    throw new Error(`Invalid IND$FILE DATA length ${total} at offset ${p}`);
+                const end = p + total;
                 out.push({ tag, header: body.subarray(p, p + 5), data: body.subarray(p + 5, end) });
                 p = end;
             } else {
                 // Most records put their length in byte 1.
+                if (p + 2 > body.length)
+                    throw new Error(`Truncated IND$FILE sub-record at offset ${p}`);
                 const len = body[p + 1] & 0xFF;
-                if (len < 2 || p + len > body.length) break;
+                if (len < 2 || p + len > body.length)
+                    throw new Error(`Invalid IND$FILE sub-record length ${len} at offset ${p}`);
                 out.push({ tag, bytes: body.subarray(p, p + len) });
                 p += len;
             }
@@ -320,6 +331,11 @@ export class IndFile {
             this.downloadChunks.push(rec.data);
             this.downloadBytes += rec.data.length;
         } else {
+            if (this.downloadBytes + rec.data.length > this.maxFileBytes) {
+                this.onError?.(`IND$FILE download exceeds ${this.maxFileBytes} bytes`);
+                this.#abort(ERR.CANCEL);
+                return;
+            }
             this.downloadChunks.push(rec.data);
             this.downloadBytes += rec.data.length;
             this.state = 'transferring';
@@ -358,8 +374,7 @@ export class IndFile {
     #close () {
         const direction = this.direction;
         const wasMessage = this.contents === 'msg';
-        // Always ACK the close - even on aborted transfers, hosts expect it.
-        this.pendingReplies.push(wrapReply(0x41, 0x09));
+        const closeAck = wrapReply(0x41, 0x09);
 
         if (direction === 'download' && !wasMessage) {
             const blob = this.#joinDownload();
@@ -379,6 +394,9 @@ export class IndFile {
             this.onError?.(`IND$FILE: ${text}`);
         }
         this.reset();
+        // reset() intentionally wipes previous transfer state; queue the
+        // final ACK afterwards so the Terminal can actually transmit it.
+        this.pendingReplies.push(closeAck);
     }
 
     #joinDownload () {
@@ -394,8 +412,9 @@ export class IndFile {
     #abort (errCode) {
         // Send a single error record to the host so it tears down the
         // transfer cleanly on its side.
-        this.pendingReplies.push(wrapReply(0x47, 0x08, errorRecord(errCode)));
+        const errorReply = wrapReply(0x47, 0x08, errorRecord(errCode));
         this.reset();
+        this.pendingReplies.push(errorReply);
     }
 
     /** Set the suggested filename for the next download (called by UI

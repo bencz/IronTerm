@@ -22,6 +22,10 @@ function isOn (scope) {
     return ENABLED.has('*') || ENABLED.has(scope);
 }
 
+export function isDebugEnabled (scope) {
+    return isOn(scope);
+}
+
 export function debugFor (scope) {
     const tag = `[${scope}]`;
     const on = isOn(scope);

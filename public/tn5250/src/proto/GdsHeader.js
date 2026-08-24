@@ -8,8 +8,7 @@
 //    2    2    record-type                    0x12 0xA0  (GDS)
 //    4    2    reserved                       0x00 0x00
 //    6    1    variable-header length         0x04
-//    7    1    flags                          ERR/ATN/SRQ/TRQ/HLP
-//    8    1    reserved                       0x00
+//    7    2    flags                          ERR/ATN/SRQ/TRQ/HLP
 //    9    1    opcode                         (Gds.Op.*)
 //
 // `wrap` and `unwrap` are inverse operations so that:
@@ -33,8 +32,8 @@ export function wrap (payload, opcode, flags = 0) {
     out[4] = 0x00;
     out[5] = 0x00;
     out[6] = Gds.VARHDR_LEN;
-    out[7] = flags & 0xFF;
-    out[8] = 0x00;
+    out[7] = (flags >> 8) & 0xFF;
+    out[8] = flags & 0xFF;
     out[9] = opcode & 0xFF;
     out.set(body, Gds.HEADER_LEN);
     return out;
@@ -48,13 +47,18 @@ export function unwrap (bytes) {
     if (bytes.length < Gds.HEADER_LEN) return null;
     if (bytes[2] !== Gds.TYPE_HI || bytes[3] !== Gds.TYPE_LO) return null;
 
+    const declaredLength = (bytes[0] << 8) | bytes[1];
+    if (declaredLength !== bytes.length || declaredLength < Gds.HEADER_LEN)
+        return null;
+
     // Trust the variable-header length so a future host extension that
     // bumps it past 4 still parses correctly.
     const varHdr = bytes[6] | 0;
+    if (varHdr < Gds.VARHDR_LEN) return null;
     const dataStart = 6 + varHdr;
-    if (dataStart > bytes.length) return null;
+    if (dataStart > declaredLength) return null;
 
-    const flags  = bytes[7];
+    const flags  = (bytes[7] << 8) | bytes[8];
     const opcode = bytes[9];                  // opcode is always at offset 9
     // Bytes 4-5 carry `miscFlags1`+`miscFlags2`. The startup confirmation
     // record (PUB400 sends one immediately after telnet negotiation)
@@ -65,6 +69,6 @@ export function unwrap (bytes) {
     // the flag so the Terminal can skip the parser dispatch.
     const miscFlags1 = bytes[4];
     const miscFlags2 = bytes[5];
-    const payload = bytes.subarray(dataStart);
-    return { opcode, flags, miscFlags1, miscFlags2, payload };
+    const payload = bytes.subarray(dataStart, declaredLength);
+    return { opcode, flags, miscFlags1, miscFlags2, payload, declaredLength, variableHeaderLength: varHdr };
 }

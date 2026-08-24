@@ -22,6 +22,8 @@ export class InputController {
      * @param {()=>void}            hooks.onBackspace
      * @param {(addr:number)=>void} hooks.onMoveCursor
      * @param {(text:string)=>void} hooks.onFlash
+     * @param {()=>void}            hooks.onSystemRequest
+     * @param {()=>void}            hooks.onFieldExit
      */
     constructor (hooks) {
         this.h = hooks;
@@ -75,6 +77,14 @@ export class InputController {
             }
             if (mod && event.key.toLowerCase() === 'p') {
                 event.preventDefault(); this.h.onAid?.(Aid.PRINT); return;
+            }
+            // Shift+Escape is the conventional 5250 System Request key.
+            // It must be checked before plain Escape (Error Reset).
+            if (event.shiftKey && event.key === 'Escape') {
+                event.preventDefault(); this.h.onSystemRequest?.(); return;
+            }
+            if (event.code === 'NumpadEnter') {
+                event.preventDefault(); this.h.onFieldExit?.(); return;
             }
 
             // Alt+letter: ENPTUI mnemonic activation. Walk every
