@@ -34,13 +34,11 @@ export class EnptuiStore {
 
     add (construct) {
         if (!construct) return;
-        // The host may re-emit a construct at the same SBA position
-        // (e.g. refreshing a selection field). Replace in place rather
-        // than stacking duplicates.
-        const idx = this.constructs.findIndex(c =>
-            c.cursorAtStart === construct.cursorAtStart && c.kind === construct.kind);
-        if (idx >= 0) this.constructs[idx] = construct;
-        else this.constructs.push(construct);
+        if (construct.active === undefined) construct.active = true;
+        // Replacement is decided by the decoder from construct-specific
+        // equality and coverage rules.  SBA alone is not an identity: nested
+        // windows may legitimately share their top-left address.
+        this.constructs.push(construct);
     }
 
     removeAt (cursor, kind) {
@@ -51,10 +49,120 @@ export class EnptuiStore {
         return removed;
     }
 
+    /** Disable matching constructs while retaining their last painted
+     *  presentation.  Format-table and Remove-GUI operations remove the
+     *  pseudo-field from keyboard/read processing, but the characters and
+     *  framing already displayed remain until later output replaces them. */
+    inactivateAt (cursor, kind) {
+        return this.inactivateWhere(construct =>
+            construct.cursorAtStart === cursor && (!kind || construct.kind === kind));
+    }
+
+    inactivateFirst (predicate) {
+        const construct = this.constructs.find(candidate =>
+            candidate.active !== false && predicate(candidate));
+        if (!construct) return null;
+        construct.active = false;
+        return construct;
+    }
+
+    inactivateWhere (predicate) {
+        const inactivated = [];
+        for (const construct of this.constructs) {
+            if (construct.active === false || !predicate(construct)) continue;
+            construct.active = false;
+            inactivated.push(construct);
+        }
+        return inactivated;
+    }
+
+    /** Mark one cell of an inactive construct's retained presentation as
+     *  replaced by later host output. Active constructs are redrawn from
+     *  their live state; only presentation-only constructs need this mask. */
+    occludeInactiveAt (address, cols) {
+        if (!Number.isInteger(address) || !Number.isInteger(cols) || cols < 1) return;
+        const row = ((address / cols) | 0) + 1;
+        const col = (address % cols) + 1;
+        const fullyOccluded = new Set();
+        for (const construct of this.constructs) {
+            if (construct.active !== false) continue;
+            const bounds = this.boundsOf(construct);
+            if (!bounds || row < bounds.top || row > bounds.bottom
+                || col < bounds.left || col > bounds.right) continue;
+            if (!construct.occludedCells) construct.occludedCells = new Set();
+            construct.occludedCells.add(address);
+            const visibleCells = Math.max(0, bounds.bottom - bounds.top + 1)
+                * Math.max(0, bounds.right - bounds.left + 1);
+            if (visibleCells > 0 && construct.occludedCells.size >= visibleCells)
+                fullyOccluded.add(construct);
+        }
+        if (fullyOccluded.size)
+            this.constructs = this.constructs.filter(construct => !fullyOccluded.has(construct));
+    }
+
     removeWhere (predicate) {
         const removed = this.constructs.filter(predicate);
         this.constructs = this.constructs.filter(c => !predicate(c));
         return removed;
+    }
+
+    boundsOf (construct) {
+        if (!construct) return null;
+        if (Number.isInteger(construct.boundsTopRow)
+            && Number.isInteger(construct.boundsLeftCol)) {
+            return {
+                top: construct.boundsTopRow,
+                left: construct.boundsLeftCol,
+                bottom: construct.boundsTopRow + (construct.boundsHeight ?? 1) - 1,
+                right: construct.boundsLeftCol + (construct.boundsWidth ?? 1) - 1,
+            };
+        }
+        if (construct.kind === ConstructKind.WINDOW) {
+            return {
+                top: construct.topRow,
+                left: construct.leftCol,
+                bottom: construct.topRow + construct.height - 1,
+                right: construct.leftCol + construct.width - 1,
+            };
+        }
+        if (construct.kind === ConstructKind.SCROLL_BAR) {
+            const top = construct.rowOffset + 1;
+            const left = construct.colOffset + 1;
+            return {
+                top,
+                left,
+                bottom: top + (construct.boundsHeight ?? 1) - 1,
+                right: left + (construct.boundsWidth ?? 1) - 1,
+            };
+        }
+        if (construct.itemPositions?.length) {
+            const positions = construct.itemPositions.filter(Boolean);
+            if (!positions.length) return null;
+            return {
+                top: Math.min(...positions.map(position => position.row)),
+                left: Math.min(...positions.map(position => position.hitCol ?? position.col)),
+                bottom: Math.max(...positions.map(position => position.row)),
+                right: Math.max(...positions.map(position =>
+                    (position.hitCol ?? position.col) + (position.hitWidth ?? 1) - 1)),
+            };
+        }
+        return null;
+    }
+
+    /** Remove active GUI constructs completely covered by a newly
+     *  defined construct. Global grid and pointer-definition state are
+     *  not rectangular GUI fields and therefore do not participate. */
+    removeCoveredBy (owner) {
+        const outer = this.boundsOf(owner);
+        if (!outer) return [];
+        return this.removeWhere(construct => {
+            if ([ConstructKind.GRID, ConstructKind.MOUSE_EVENTS].includes(construct.kind))
+                return false;
+            const inner = this.boundsOf(construct);
+            return inner
+                && inner.top >= outer.top && inner.left >= outer.left
+                && inner.bottom <= outer.bottom && inner.right <= outer.right;
+        });
     }
 
     /** Remove every input construct that lies entirely inside `window`'s
@@ -69,48 +177,13 @@ export class EnptuiStore {
         const bot    = top  + window.height - 1;
         const right  = left + window.width  - 1;
         const inside = (r, c) => r >= top && r <= bot && c >= left && c <= right;
-        const boundsOf = construct => {
-            if (Number.isInteger(construct.boundsTopRow)
-                && Number.isInteger(construct.boundsLeftCol)) {
-                return {
-                    top: construct.boundsTopRow,
-                    left: construct.boundsLeftCol,
-                    bottom: construct.boundsTopRow + (construct.boundsHeight ?? 1) - 1,
-                    right: construct.boundsLeftCol + (construct.boundsWidth ?? 1) - 1,
-                };
-            }
-            if (construct.kind === ConstructKind.SCROLL_BAR) {
-                const cTop = construct.rowOffset + 1;
-                const cLeft = construct.colOffset + 1;
-                return {
-                    top: cTop,
-                    left: cLeft,
-                    bottom: cTop + (construct.boundsHeight ?? 1) - 1,
-                    right: cLeft + (construct.boundsWidth ?? 1) - 1,
-                };
-            }
-            if (construct.itemPositions?.length) {
-                const positions = construct.itemPositions.filter(Boolean);
-                if (!positions.length) return null;
-                return {
-                    top: Math.min(...positions.map(p => p.row)),
-                    left: Math.min(...positions.map(p => p.col)),
-                    bottom: Math.max(...positions.map(p => p.row)),
-                    right: Math.max(...positions.map(p => p.col + (p.hitWidth ?? 1) - 1)),
-                };
-            }
-            const r = construct.topRow ?? construct.row;
-            const c = construct.leftCol ?? construct.col;
-            if (!Number.isInteger(r) || !Number.isInteger(c)) return null;
-            return { top: r, left: c, bottom: r, right: c };
-        };
         const removed = [];
         this.constructs = this.constructs.filter(c => {
             // IBM cascades only field constructs (construct types 2..5),
             // never another window, the global grid, or PMB definitions.
             if (![ConstructKind.SELECTION_FIELD, ConstructKind.MENU_BAR,
                 ConstructKind.PUSH_BUTTONS, ConstructKind.SCROLL_BAR].includes(c.kind)) return true;
-            const bounds = boundsOf(c);
+            const bounds = this.boundsOf(c);
             if (!bounds) return true;
             if (inside(bounds.top, bounds.left) && inside(bounds.bottom, bounds.right)) {
                 removed.push(c);
@@ -131,15 +204,20 @@ export class EnptuiStore {
         return removed;
     }
 
-    /** Iterate all constructs of a given kind. */
-    *of (kind) {
-        for (const c of this.constructs) if (c.kind === kind) yield c;
+    inactivateChildrenLinkedTo (parent) {
+        return this.inactivateWhere(construct => construct.parent === parent);
     }
 
-    /** First construct that visually contains the given (row, col) - 1-based. */
+    /** Iterate all constructs of a given kind. */
+    *of (kind) {
+        for (const c of this.constructs)
+            if (c.active !== false && c.kind === kind) yield c;
+    }
+
+    /** Topmost window that visually contains the given (row, col) - 1-based. */
     constructAt (row, col) {
-        for (const c of this.constructs) {
-            if (c.kind === ConstructKind.WINDOW
+        for (const c of this.frontToBack) {
+            if (c.active !== false && c.kind === ConstructKind.WINDOW
                 && row >= c.topRow && row < c.topRow + c.height
                 && col >= c.leftCol && col < c.leftCol + c.width)
                 return c;
@@ -147,5 +225,14 @@ export class EnptuiStore {
         return null;
     }
 
-    get all () { return this.constructs; }
+    /** Active constructs participate in input, reads and host updates. */
+    get all () { return this.constructs.filter(construct => construct.active !== false); }
+
+    /** Hit testing follows paint stacking: the newest active construct is
+     *  examined first, while `all` retains host definition order for Tab
+     *  traversal and outbound reads. */
+    get frontToBack () { return this.all.slice().reverse(); }
+
+    /** Active and presentation-only constructs are both paintable. */
+    get visuals () { return this.constructs; }
 }

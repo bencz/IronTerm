@@ -58,7 +58,7 @@ export class NvtView {
         // Stop propagation so the document-level InputController doesn't
         // also try to consume the same keystroke.
         const consume = () => { event.preventDefault(); event.stopPropagation(); };
-        if (k === 'Enter') {
+        if (k === 'Enter' || event.code === 'NumpadEnter') {
             consume();
             const line = this.lineBuffer + '\r\n';
             this.text += '\r\n';

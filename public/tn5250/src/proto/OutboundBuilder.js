@@ -58,7 +58,7 @@ export class OutboundBuilder {
      *  Each modified field is preceded by an SBA pointing at its first
      *  data cell (one past the SF attribute byte). */
     buildAidResponse (aid, { includeAll = false, preserveNulls = false,
-                             shortRead = false } = {}) {
+                             sequential = false, shortRead = false } = {}) {
         const out = [];
         // Cursor row/col are 1-based on the wire.
         const row = (this.screen.cursor / this.screen.cols | 0) + 1;
@@ -73,12 +73,21 @@ export class OutboundBuilder {
         // Some AIDs (CLEAR, HELP, Roll, PA-like keys) submit no field
         // data; everything else streams the modified fields.
         if (!shortRead && !this.#isShortRead(aid)) {
-            for (const f of this.#orderedFields()) {
-                if (f.bypass) continue;
-                if (!includeAll && !f.modified) continue;
-                this.#emitField(out, f, { preserveNulls, trimTrailing: !includeAll });
+            for (const entry of this.#orderedInputEntries()) {
+                if (entry.type === 'field') {
+                    const f = entry.value;
+                    if (f.bypass || (f.continued && !f.continuedFirst)) continue;
+                    const chain = this.screen.fieldChain(f);
+                    if (!includeAll && !chain.some(segment => segment.modified)) continue;
+                    this.#emitField(out, f, {
+                        preserveNulls, trimTrailing: !includeAll, omitAddress: sequential,
+                    });
+                } else {
+                    this.#emitEnptuiField(out, entry.value, {
+                        includeAll, omitAddress: sequential,
+                    });
+                }
             }
-            this.#emitEnptuiFields(out, { includeAll });
         }
         return Uint8Array.from(out);
     }
@@ -86,61 +95,71 @@ export class OutboundBuilder {
     /** For Read MDT / Read Input we don't include cursor + AID -
      *  the host invited us so it knows where we are. The payload is
      *  just the SBA-delimited field stream. */
-    buildReadResponse ({ includeAll = false, aid = null, preserveNulls = false } = {}) {
+    buildReadResponse ({ includeAll = false, aid = null, preserveNulls = false,
+                          sequential = false } = {}) {
         const out = [];
         if (aid !== null) {
             const row = (this.screen.cursor / this.screen.cols | 0) + 1;
             const col = (this.screen.cursor % this.screen.cols) + 1;
             out.push(row, col, aid & 0xFF);
         }
-        for (const f of this.#orderedFields()) {
-            if (f.bypass) continue;
-            if (!includeAll && !f.modified) continue;
-            this.#emitField(out, f, { preserveNulls, trimTrailing: !includeAll });
+        for (const entry of this.#orderedInputEntries()) {
+            if (entry.type === 'field') {
+                const f = entry.value;
+                if (f.bypass || (f.continued && !f.continuedFirst)) continue;
+                const chain = this.screen.fieldChain(f);
+                if (!includeAll && !chain.some(segment => segment.modified)) continue;
+                this.#emitField(out, f, {
+                    preserveNulls, trimTrailing: !includeAll, omitAddress: sequential,
+                });
+            } else {
+                this.#emitEnptuiField(out, entry.value, {
+                    includeAll, omitAddress: sequential,
+                });
+            }
         }
-        this.#emitEnptuiFields(out, { includeAll });
         return Uint8Array.from(out);
     }
 
-    #emitEnptuiFields (out, { includeAll = false } = {}) {
-        for (const construct of this.screen.enptui?.all ?? []) {
-            const isSelection = construct.kind === 'selectionField'
-                || construct.kind === 'menuBar'
-                || construct.kind === 'pushButtons';
-            const isStandaloneScroll = construct.kind === 'scrollBar' && !construct.parent;
-            if (!isSelection && !isStandaloneScroll) continue;
-            if (!includeAll && !construct.modified) continue;
+    #emitEnptuiField (out, construct, { includeAll = false, omitAddress = false } = {}) {
+        if (!includeAll && !construct.modified) return;
 
-            const addr = construct.cursorAtStart;
-            if (!Number.isInteger(addr) || addr < 0 || addr >= this.screen.size) continue;
+        const anchor = construct.cursorAtStart;
+        if (!Number.isInteger(anchor) || anchor < 0 || anchor >= this.screen.size) return;
+        // The WDSF is anchored at the current buffer address, but its
+        // synthetic input field starts in the following buffer cell.
+        // The host's field table therefore expects the response SBA at
+        // anchor + 1, just like a normal field starts after its attribute.
+        if (!omitAddress) {
+            const addr = (anchor + 1) % this.screen.size;
             out.push(0x11,
                 ((addr / this.screen.cols) | 0) + 1,
                 (addr % this.screen.cols) + 1);
+        }
 
-            if (isStandaloneScroll) {
-                this.#pushU32(out, construct.scrollIncrement ?? 0);
-                continue;
-            }
+        if (construct.kind === 'scrollBar') {
+            this.#pushU32(out, construct.scrollIncrement ?? 0);
+            return;
+        }
 
-            // IBM serializes every non-multi construct (including menu bars
-            // and push buttons) as a two-byte selected-choice index.
-            if (!construct.multi) {
-                const selected = construct.items.findIndex(item => item.selected);
-                out.push(0x00, selected < 0 ? 0x00 : selected + 0x20);
-            } else {
-                for (const item of construct.items) out.push(item.selected ? 0xF1 : 0x00);
-            }
+        // Every non-multi construct (including menu bars and push buttons)
+        // is serialized as a two-byte selected-choice index.
+        if (!construct.multi) {
+            const selected = construct.items.findIndex(item => item.selected);
+            out.push(0x00, selected < 0 ? 0x00 : selected + 0x20);
+        } else {
+            for (const item of construct.items) out.push(item.selected ? 0xF1 : 0x00);
+        }
 
-            const attached = (this.screen.enptui?.all ?? []).find(c =>
-                c.kind === 'scrollBar' && c.parent === construct);
-            if (attached) this.#pushU32(out, attached.scrollIncrement ?? 0);
+        const attached = (this.screen.enptui?.all ?? []).find(c =>
+            c.kind === 'scrollBar' && c.parent === construct);
+        if (attached) this.#pushU32(out, attached.scrollIncrement ?? 0);
 
-            // HOD clears selected choices while an auto-enter response is
-            // being collected, preventing a transient button/menu choice
-            // from remaining latched after its AID has been sent.
-            if (construct.autoEnter) {
-                for (const item of construct.items) item.selected = false;
-            }
+        // Selected choices are cleared while an auto-enter response is
+        // being collected, preventing a transient button/menu choice
+        // from remaining latched after its AID has been sent.
+        if (construct.autoEnter) {
+            for (const item of construct.items) item.selected = false;
         }
     }
 
@@ -149,24 +168,33 @@ export class OutboundBuilder {
         out.push((n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF);
     }
 
-    #emitField (out, f, { preserveNulls = false, trimTrailing = true } = {}) {
+    #emitField (out, f, { preserveNulls = false, trimTrailing = true,
+                          omitAddress = false } = {}) {
         const startData = (f.start + 1) % this.screen.size;
-        const row = (startData / this.screen.cols | 0) + 1;
-        const col = (startData % this.screen.cols) + 1;
-        out.push(0x11, row, col);                 // SBA row col
+        if (!omitAddress) {
+            const row = (startData / this.screen.cols | 0) + 1;
+            const col = (startData % this.screen.cols) + 1;
+            out.push(0x11, row, col);             // SBA row col
+        }
 
-        // Collect the field's data bytes first. `f.length` is the count
-        // of data cells (per IBM SF order semantics).
-        const raw = new Array(f.length).fill(0x00);
-        for (let i = 0; i < f.length; i++) {
-            const idx = (startData + i) % this.screen.size;
-            const cell = this.screen.cells[idx];
-            if (cell.startField) {
-                // Hit the next field's attribute place - shrink length.
-                raw.length = i;
-                break;
+        // Continued segments are one logical field on the wire. Only the
+        // first segment contributes the SBA; data from every segment is
+        // concatenated in chain order and intermediate attributes vanish.
+        const chain = this.screen.fieldChain(f);
+        if (f.ccsid) {
+            this.#emitUnicodeField(out, f, chain, {
+                preserveNulls, trimTrailing, omitAddress,
+            });
+            return;
+        }
+        const raw = [];
+        for (const segment of chain) {
+            for (let i = 0; i < segment.length; i++) {
+                const idx = (segment.start + 1 + i) % this.screen.size;
+                const cell = this.screen.cells[idx];
+                if (cell.startField) break;
+                raw.push(cell.byte);
             }
-            raw[i] = cell.byte;
         }
 
         if (trimTrailing && !f.transparent) {
@@ -176,7 +204,7 @@ export class OutboundBuilder {
         // A signed-numeric field reserves its final display position for
         // a minus marker. On the wire that marker is removed and encoded
         // as a negative zone (0xD) on the preceding digit.
-        if (f.signedNumeric && raw.length === f.length) {
+        if (f.signedNumeric && chain.length === 1 && raw.length === f.length) {
             const negative = raw[raw.length - 1] === 0x60;
             raw.pop();
             if (negative && raw.length > 0)
@@ -184,7 +212,8 @@ export class OutboundBuilder {
         }
 
         if (f.transparent) {
-            out.push(0x10, (raw.length >>> 8) & 0xFF, raw.length & 0xFF);
+            if (!omitAddress)
+                out.push(0x10, (raw.length >>> 8) & 0xFF, raw.length & 0xFF);
             for (const byte of raw) out.push(byte);
             return;
         }
@@ -209,21 +238,81 @@ export class OutboundBuilder {
         for (const b of bytes) out.push(b);
     }
 
-    #orderedFields () {
-        const fields = this.screen.fields;
+    /** Tagged-CCSID fields occupy two presentation-space bytes per UTF-16
+     *  code unit. Their inbound field length and optional maximum-return
+     *  length are byte counts, while the presentation model stores one
+     *  Unicode glyph in the leading cell of each logical character. */
+    #emitUnicodeField (out, f, chain, { preserveNulls, trimTrailing, omitAddress }) {
+        const displayBytes = chain.reduce((sum, segment) => sum + segment.length, 0);
+        const returnBytes = f.maxReturnLength || displayBytes;
+        const charCapacity = Math.floor(returnBytes / 2);
+        const chars = [];
+
+        for (const segment of chain) {
+            const segmentCharacters = Math.floor(segment.length / 2);
+            for (let i = 0; i < segmentCharacters && chars.length < charCapacity; i++) {
+                const cell = this.screen.cells[(segment.start + 1 + i) % this.screen.size];
+                chars.push(cell.byte === 0x00 ? 0x0000 : (cell.glyph?.charCodeAt(0) ?? 0x0000));
+            }
+        }
+        while (chars.length < charCapacity) chars.push(0x0000);
+        if (trimTrailing && !f.transparent) {
+            while (chars.length > 0 && chars[chars.length - 1] === 0x0000) chars.pop();
+        }
+
+        const bytes = [];
+        for (const value of chars) {
+            const codeUnit = value === 0x0000 && !preserveNulls && !f.transparent
+                ? 0x0020
+                : value;
+            bytes.push((codeUnit >>> 8) & 0xFF, codeUnit & 0xFF);
+        }
+
+        // Addressed read variants identify Unicode data with TD. In a
+        // sequential read the host already has the field-format table,
+        // so the UTF-16BE bytes are concatenated without an order prefix.
+        if (!omitAddress)
+            out.push(0x10, (bytes.length >>> 8) & 0xFF, bytes.length & 0xFF);
+        out.push(...bytes);
+    }
+
+    #orderedInputEntries () {
+        const entries = [];
+        for (const field of this.screen.fields) {
+            if (field.continued && !field.continuedFirst) continue;
+            entries.push({ type: 'field', value: field });
+        }
+        for (const construct of this.screen.enptui?.all ?? []) {
+            const isSelection = construct.kind === 'selectionField'
+                || construct.kind === 'menuBar'
+                || construct.kind === 'pushButtons';
+            const isStandaloneScroll = construct.kind === 'scrollBar' && !construct.parent;
+            if (isSelection || isStandaloneScroll)
+                entries.push({ type: 'enptui', value: construct });
+        }
+        entries.sort((a, b) => {
+            const orderA = a.value.formatOrder ?? Number.MAX_SAFE_INTEGER;
+            const orderB = b.value.formatOrder ?? Number.MAX_SAFE_INTEGER;
+            if (orderA !== orderB) return orderA - orderB;
+            return (a.value.start ?? a.value.cursorAtStart)
+                - (b.value.start ?? b.value.cursorAtStart);
+        });
+
         const first = this.screen.soh?.resequence ?? 0;
-        if (first <= 0) return fields;
+        if (first <= 0) return entries;
         const ordered = [];
         const visited = new Set();
         let number = first;
         while (number > 0 && number !== 0xFF && !visited.has(number)) {
             visited.add(number);
-            const field = fields[number - 1];
-            if (!field) break;
-            ordered.push(field);
-            number = field.resequence;
+            const entry = entries[number - 1];
+            if (!entry) break;
+            ordered.push(entry);
+            const next = entry.type === 'field' ? entry.value.resequence : 0;
+            number = next || number + 1;
+            if (number > entries.length) break;
         }
-        return ordered.length > 0 ? ordered : fields;
+        return ordered.length > 0 ? ordered : entries;
     }
 
     #isShortRead (aid) {
@@ -234,27 +323,33 @@ export class OutboundBuilder {
         //                       to these yet but the predicate stays)
         //   0xF3 HELP
         //   0xF6 PRINT
-        //   0xF8 (reserved / display backup)
+        //   0xF8 HOME
         return aid === Aid.HELP
             || aid === Aid.CLEAR
             || aid === Aid.PRINT
             || aid === 0x6B || aid === 0x6C || aid === 0x6E
-            || aid === 0xF8;
+            || aid === Aid.HOME;
     }
 
     // ---- Query response (RFC 1205 §5.3) -------------------------------
 
-    /** Query reply through byte 60 as defined by RFC 1205. Capabilities
-     *  are derived from the selected model and only implemented features
-     *  are advertised. */
+    /** Query reply. The base form ends at byte 60; ENPTUI level 2 extends
+     *  it through byte 66. Capabilities are derived from the selected
+     *  model and only implemented features are advertised. */
     buildQueryResponse ({ modelKey = '3179-2', enhanced = false } = {}) {
-        const a = new Uint8Array(61);
+        // The 5250 Query Reply has a fixed 71-byte workstation payload.
+        // The structured-field count (0x44) covers bytes 3..70; cursor
+        // row/column and the AID precede the structured field. Keeping the
+        // reserved tail is important because the capability bytes are at
+        // fixed offsets within this structure.
+        const a = new Uint8Array(71);
         a[0] = 0x00;                // cursor row (0 = none in a WSF reply)
         a[1] = 0x00;                // cursor col
         a[2] = 0x88;                // inbound write-structured-field AID
-        // Length counts bytes 3..60 inclusive.
+        // The structured-field count excludes cursor row/column, AID and
+        // the two count bytes themselves.
         a[3] = 0x00;
-        a[4] = 0x3A;
+        a[4] = 0x44;
         a[5] = 0xD9;                // command class
         a[6] = 0x70;                // command type = Query
         a[7] = 0x80;                // flag byte
@@ -275,18 +370,49 @@ export class OutboundBuilder {
         a[37] = 0x01;               // keyboard id
         a[38] = 0x01;               // extended keyboard id
         a[39] = 0x00;               // reserved
-        a[40] = 0x00; a[41] = 0x24; a[42] = 0x24; a[43] = 0x00;  // serial
+        a[40] = 0x00; a[41] = 0x00; a[42] = 0x70; a[43] = 0x12;  // serial
         a[44] = 0x01; a[45] = 0xF4;  // max display fields = 500
-        // 46-48: reserved
+        // Tagged-CCSID/Unicode fields are supported by WRITE_DATA and the
+        // outbound field serializer. Advertise that independently of the
+        // enhanced user-interface extension.
+        a[46] = 0x40;
+        // 47-48: reserved
         // Move Cursor + Read MDT Immediate Alternate are implemented.
-        a[49] = 0x03;
+        a[49] = 0x7B;
         const large = ['3180-2', '3477-FC', '3477-FG'].includes(modelKey);
         const color = ['5292-2', '3179-2', '3477-FC'].includes(modelKey);
         a[50] = (large ? 0x30 : 0x10) | (color ? 0x01 : 0x00);
-        // Enhanced graphics is model/caller-controlled. Terminal enables
-        // it only for the ENPTUI-capable 5292-2 profile.
-        a[53] = enhanced ? 0x20 : 0x00;
+        a[52] = 0x01;               // Unicode data-stream support
+        // Full ENPTUI capability bytes. The individual bits cover the
+        // enhanced FCWs and WDSFs used by choices, windows, mouse events,
+        // scroll bars, and Write Data.
+        a[53] = enhanced ? 0x0F : 0x00;
+        a[54] = enhanced ? 0xC8 : 0x00;
+        // Grid buffers are a separate capability from the ENPTUI command
+        // bits above. DDS GRDRCD records are suppressed by IBM i unless the
+        // query reply advertises both an available buffer and type-1 grid
+        // line support. One retained buffer is sufficient for the grid
+        // presentation plane implemented by ScreenBuffer.
+        a[61] = enhanced ? 0x01 : 0x00;
+        a[62] = enhanced ? 0x01 : 0x00;
         return a;
+    }
+
+    /** Query Station State reply. The compact form reports the supported
+     *  state class/level; the extended request returns the three fixed
+     *  workstation-state descriptors defined by the 5250 architecture. */
+    buildQueryStationStateResponse ({ extended = false } = {}) {
+        if (extended) {
+            return Uint8Array.from([
+                0x00, 0x00, 0x88,
+                0x00, 0x0C, 0xD9, 0x72, 0xC0, 0x00,
+                0x33, 0x30, 0x45, 0x30, 0x04, 0xB0,
+            ]);
+        }
+        return Uint8Array.from([
+            0x00, 0x00, 0x88,
+            0x00, 0x09, 0xD9, 0x72, 0x80, 0x00, 0x03, 0x01, 0x04,
+        ]);
     }
 
     // ---- screen dump --------------------------------------------------
@@ -318,6 +444,75 @@ export class OutboundBuilder {
             out.push(0xFF);
         }
         return Uint8Array.from(out);
+    }
+
+    /** Read Screen To Print With Grid Lines. Each packet carries the
+     *  grid description for row N and the text of row N-1; row zero is
+     *  therefore grid-only and the final packet carries only the last
+     *  text row. */
+    buildReadScreenWithGridLines ({ extended = false } = {}) {
+        const out = [0, 0, 0, 0, 0];
+        const grid = this.screen.enptui?.all.find(
+            construct => construct.kind === 'grid')?.gridBuf
+            ?? new Uint8Array(this.screen.size);
+
+        const pushPacket = (row, gridBytes, textBytes) => {
+            const gridLength = gridBytes.length;
+            const totalLength = gridLength + textBytes.length + (extended ? 1 : 0);
+            out.push(row & 0xFF,
+                (totalLength >>> 8) & 0xFF, totalLength & 0xFF,
+                (gridLength >>> 8) & 0xFF, gridLength & 0xFF,
+                ...gridBytes, ...textBytes);
+            // Extended-attribute packets terminate their presentation
+            // row with IAC. The Telnet layer performs wire escaping.
+            if (extended) out.push(0xFF);
+        };
+
+        const rowText = row => {
+            const start = row * this.screen.cols;
+            const bytes = this.screen.cells
+                .slice(start, start + this.screen.cols)
+                .map(cell => cell.byte);
+            if (extended) {
+                while (bytes.length > 0 && bytes.at(-1) === 0x00) bytes.pop();
+            }
+            return bytes;
+        };
+
+        const firstGrid = this.#gridLineRecords(grid, 0);
+        if (firstGrid.length) pushPacket(0, firstGrid, []);
+        for (let row = 1; row < this.screen.rows; row++) {
+            const gridBytes = this.#gridLineRecords(grid, row);
+            pushPacket(row, gridBytes, rowText(row - 1));
+        }
+        pushPacket(this.screen.rows, [], rowText(this.screen.rows - 1));
+        return Uint8Array.from(out);
+    }
+
+    #gridLineRecords (grid, row) {
+        const start = row * this.screen.cols;
+        const horizontalStops = [];
+        let inHorizontal = false;
+        const verticalStops = [];
+        for (let col = 0; col < this.screen.cols; col++) {
+            const value = grid[start + col] ?? 0;
+            const horizontal = (value & 0x05) !== 0;
+            if (horizontal !== inHorizontal) {
+                horizontalStops.push(col + 1);
+                inHorizontal = horizontal;
+            }
+            if ((value & 0x0A) !== 0) verticalStops.push(col + 1);
+        }
+        if (inHorizontal) horizontalStops.push(this.screen.cols);
+
+        const records = [];
+        if (horizontalStops.length) records.push(
+            0x2B, 0xFD, 4 + horizontalStops.length, 0, 0, 0x80,
+            ...horizontalStops);
+        if (verticalStops.length) records.push(
+            0x2B, 0xFD, 4 + verticalStops.length, 0, 0, 0x40,
+            ...verticalStops);
+        return records;
     }
 
     /** Save Screen responses carry an opaque terminal-owned token. The

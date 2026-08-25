@@ -52,6 +52,7 @@ export const Gds = Object.freeze({
         SRQ: 0x0400,
         TRQ: 0x0200,
         HLP: 0x0100,
+        RESPONSE: 0x0080,
     }),
 
     Op: Object.freeze({
@@ -62,10 +63,17 @@ export const Gds = Object.freeze({
         SAVE_SCREEN:         0x04,
         RESTORE_SCREEN:      0x05,
         READ_IMMEDIATE:      0x06,
+        READ_MDT_IMMEDIATE_ALT: 0x07,
         READ_SCREEN:         0x08,
+        READ_MDT_FIELDS:     0x09,
         CANCEL_INVITE:       0x0A,
         MESSAGE_LIGHT_ON:    0x0B,
         MESSAGE_LIGHT_OFF:   0x0C,
+        READ_SCREEN_WITH_EA: 0x0D,
+        READ_SCREEN_TO_PRINT: 0x0E,
+        READ_SCREEN_TO_PRINT_WITH_EA: 0x0F,
+        READ_SCREEN_TO_PRINT_WITH_GRID: 0x10,
+        READ_SCREEN_TO_PRINT_WITH_GRID_EA: 0x11,
     }),
 });
 
@@ -155,9 +163,9 @@ function A (fg, opts = {}) {
 }
 // Each attribute byte applies to every following cell until the next
 // attribute byte, per the IBM 5250 colour table for real IBM-3179-2 /
-// IBM-3477 / IBM-5292-2 hardware. Some bytes share
-// rendering: e.g. 0x28 and 0x2A both produce red-normal in hardware
-// (the second bit doesn't change the visual on a colour 5250).
+// IBM-3477 / IBM-5292-2 hardware. Alternate values in a colour group
+// may add blink or a column separator, so every descriptor remains
+// explicit for ordinary fields and ENPTUI palettes alike.
 export const ATTR_BASE = Object.freeze({
     0x20: A('green'),
     0x21: A('green',     { reverse: true }),
@@ -169,20 +177,20 @@ export const ATTR_BASE = Object.freeze({
     0x27: A('green',     { hidden: true }),
     0x28: A('red'),
     0x29: A('red',       { reverse: true }),
-    0x2A: A('red'),                                     // alias of 0x28
-    0x2B: A('red',       { reverse: true }),            // alias of 0x29
+    0x2A: A('red',       { blink: true }),
+    0x2B: A('red',       { blink: true, reverse: true }),
     0x2C: A('red',       { underline: true }),
     0x2D: A('red',       { underline: true, reverse: true }),
-    0x2E: A('red',       { underline: true }),          // alias of 0x2C
+    0x2E: A('red',       { blink: true, underline: true }),
     0x2F: A('red',       { hidden: true }),
     0x30: A('turquoise', { colSep: true }),
     0x31: A('turquoise', { colSep: true, reverse: true }),
     0x32: A('yellow',    { colSep: true }),
     0x33: A('yellow',    { colSep: true, reverse: true }),
-    0x34: A('turquoise', { underline: true }),
-    0x35: A('turquoise', { underline: true, reverse: true }),
-    0x36: A('yellow',    { underline: true }),
-    0x37: A('turquoise', { hidden: true }),
+    0x34: A('turquoise', { colSep: true, underline: true }),
+    0x35: A('turquoise', { colSep: true, underline: true, reverse: true }),
+    0x36: A('yellow',    { colSep: true, underline: true }),
+    0x37: A('turquoise', { colSep: true, hidden: true }),
     0x38: A('pink'),
     0x39: A('pink',      { reverse: true }),
     0x3A: A('blue'),
@@ -255,6 +263,7 @@ export const Aid = Object.freeze({
     CLEAR:      0xBD,
     ENTER:      0xF1,
     HELP:       0xF3,
+    ERROR_HELP: 0xFB,
     // Per the IBM 5250 architecture document:
     //   AID_PAGEUP = 244 = 0xF4   (real keyboard "Page Up")
     //   AID_PAGEDW = 245 = 0xF5   (real keyboard "Page Down")
@@ -265,6 +274,7 @@ export const Aid = Object.freeze({
     ROLL_LEFT:  0xD9,
     ROLL_RIGHT: 0xDA,
     PRINT:      0xF6,
+    HOME:       0xF8,
 });
 
 const AID_BY_NAME = Object.freeze({
@@ -279,13 +289,29 @@ const AID_BY_NAME = Object.freeze({
 });
 export function aidFromName (name) { return AID_BY_NAME[name] ?? null; }
 
-// ---- Negative response sense codes (RFC 1205 §4) ---------------------
+// ---- Negative response sense codes (RFC 1205 §3) ---------------------
+// ERR responses carry a four-byte SNA sense code after the opcode.
 export const NegResp = Object.freeze({
-    REQUEST_REJECT: 0x08,
-    REQUEST_ERROR:  0x10,
-    STATE_ERROR:    0x20,
-    USAGE_ERROR:    0x40,
-    PATH_ERROR:     0x80,
+    COMMAND_NOT_VALID:       0x10030101,
+    CLEAR_UNIT_ALT_INVALID:  0x10030105,
+    RESEQUENCING_ERROR:      0x10050103,
+    STRUCTURED_FIELD_LENGTH: 0x10050110,
+    STRUCTURED_FIELD_TYPE:   0x10050111,
+    STRUCTURED_FIELD_PARAM:  0x10050112,
+    TOO_LITTLE_DATA:         0x10050121,
+    INVALID_ADDRESS:         0x10050122,
+    ADDRESS_PRECEDES:        0x10050123,
+    INVALID_SOH:             0x10050125,
+    WRITE_PAST_END:          0x1005012A,
+    INVALID_START_FIELD:     0x1005012B,
+    INVALID_ROLL:            0x1005012C,
+    INVALID_ERASE_ADDRESS:   0x1005012D,
+    INVALID_EXT_ATTRIBUTE:   0x1005012F,
+    INVALID_TRANSPARENT_DATA: 0x10050130,
+
+    // Compatibility names used by the terminal's generic fallbacks.
+    REQUEST_ERROR:           0x10030101,
+    STATE_ERROR:             0x10030101,
 });
 
 // ---- Models -----------------------------------------------------------

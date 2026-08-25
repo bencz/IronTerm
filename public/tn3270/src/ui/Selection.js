@@ -62,14 +62,19 @@ export class Selection {
     async paste () {
         try {
             const text = await navigator.clipboard.readText();
-            if (!text) return;
-            // 3270 input fields are flat - strip line breaks and tabs so
-            // they don't get typed as literal control chars.
-            const cleaned = text.replace(/[\r\n\t]+/g, ' ');
-            this.h.onType?.(cleaned);
+            this.pasteText(text);
         } catch {
             this.h.onFlash?.('paste blocked');
         }
+    }
+
+    /** Paste text supplied by the browser's trusted `paste` event. */
+    pasteText (text) {
+        if (!text) return;
+        // 3270 input fields are flat - strip line breaks and tabs so
+        // they don't get typed as literal control chars.
+        const cleaned = text.replace(/[\r\n\t]+/g, ' ');
+        this.h.onType?.(cleaned);
     }
 
     // ---- mouse --------------------------------------------------------

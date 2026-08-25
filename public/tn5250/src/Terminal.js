@@ -16,7 +16,7 @@ import { InboundParser } from './proto/InboundParser.js';
 import { OutboundBuilder } from './proto/OutboundBuilder.js';
 import { decodeStartupRecord } from './proto/StartupRecord.js';
 import * as Gds from './proto/GdsHeader.js';
-import { Aid, Cmd, Models, Gds as GdsConsts, NegResp } from './proto/Constants.js';
+import { Aid, Cmd, Order, Models, Gds as GdsConsts, NegResp } from './proto/Constants.js';
 
 // Map an AID byte back to its PF number, or null when it's not a PF.
 function pfNumberFor (aid) {
@@ -54,6 +54,7 @@ export class Terminal {
             onGeometryChange: () => this.renderer.resize(),
         });
         this.builder  = new OutboundBuilder(this.screen);
+        this.pendingResponseOpcode = GdsConsts.Op.PUT_GET_OPERATION;
         this.transport = null;
         this.telnet    = null;
         this.oia       = new Oia(oiaEls);
@@ -76,12 +77,23 @@ export class Terminal {
             onInsert:     ()    => { this.screen.toggleInsertMode(); this.draw(); },
             onTab:        ()    => { this.screen.tab(); this.draw(); },
             onBackTab:    ()    => { this.screen.backTab(); this.draw(); },
-            onMoveCursor: (i)   => { this.screen.cursor = i; this.draw(); },
+            onMoveCursor: (i)   => {
+                const moved = this.screen.moveCursorTo(i);
+                this.draw();
+                return moved;
+            },
             onFlash:      (msg) => this.flashStatus(msg),
             onSystemRequest: () => this.sendSystemRequest(),
             onFieldExit:   ()    => this.fieldExit(),
-            onFieldPlus:   ()    => { this.screen.fieldSignExit(false); this.draw(); },
-            onFieldMinus:  ()    => { this.screen.fieldSignExit(true); this.draw(); },
+            onFieldPlus:   ()    => this.fieldSignExit(false),
+            onFieldMinus:  ()    => this.fieldSignExit(true),
+            onNewline:     ()    => { this.screen.newLine(); this.draw(); },
+            onDeleteWord:  ()    => { this.screen.deleteWord(); this.draw(); },
+            onEraseField:  ()    => { this.screen.eraseField(); this.draw(); },
+            onWordTab:     (backwards) => { this.screen.wordTab(backwards); this.draw(); },
+            onDup:         ()    => this.insertDup(),
+            onFieldMark:   ()    => this.insertFieldMark(),
+            onReset:       ()    => this.resetOperatorState(),
         });
 
         window.addEventListener('resize', () => this.renderer.resize());
@@ -276,15 +288,21 @@ export class Terminal {
             return;
         }
         const { opcode, flags, miscFlags1, payload } = decoded;
+        const flags1 = (flags >>> 8) & 0xFF;
         this.#logRecord('IN ', opcode, flags, payload);
         debug.log(`record opcode=0x${opcode.toString(16).padStart(2,'0')} payload=`,
             Array.from(payload.slice(0, 48)).map(b => b.toString(16).padStart(2,'0')).join(' '),
             `(len=${payload.length})`);
 
         if (flags & GdsConsts.Flag.ERR) {
-            const code = payload[0] ?? 0;
-            this.flashStatus(`host rejected request (0x${code.toString(16).padStart(2, '0')})`, 'error', 3000);
-            debug.warn(`negative response from host: 0x${code.toString(16).padStart(2, '0')}`);
+            const code = payload.length >= 4
+                ? (((payload[0] << 24) | (payload[1] << 16)
+                    | (payload[2] << 8) | payload[3]) >>> 0)
+                : (payload[0] ?? 0);
+            const width = payload.length >= 4 ? 8 : 2;
+            const hex = code.toString(16).padStart(width, '0');
+            this.flashStatus(`host rejected request (0x${hex})`, 'error', 3000);
+            debug.warn(`negative response from host: 0x${hex}`);
             return;
         }
 
@@ -333,6 +351,11 @@ export class Terminal {
                 // the embedded WTD finishes drawing - the host expects
                 // us to unlock and wait for an AID-bearing reply. This
                 // matches the IBM 5250 invite-for-input semantics.
+                this.parser.readType = (flags1 & 0x10) === 0
+                    ? GdsConsts.Op.READ_IMMEDIATE
+                    : (flags1 & 0x08) !== 0
+                        ? GdsConsts.Op.READ_MDT_IMMEDIATE_ALT
+                        : GdsConsts.Op.READ_MDT_FIELDS;
                 if (!this.#processPayload(payload)) return;
                 if (!this.parser.readImmediateRequested
                     && !this.parser.readScreenRequested
@@ -341,33 +364,47 @@ export class Terminal {
                     && !this.parser.saveScreenRequested) {
                     this.parser.readPending = true;
                     this.parser.invited     = true;
-                    this.screen.unlockKeyboard();
                 }
+                if (this.parser.readPending) this.pendingResponseOpcode = opcode;
                 break;
             case GdsConsts.Op.OUTPUT_ONLY:
-                if (!this.#processPayload(payload)) return;
+                // Output-only records may carry a transport prefix before
+                // the first command escape. The command stream starts at
+                // the first ESC, not necessarily at payload offset zero.
+                {
+                    const commandStart = payload.indexOf(Order.ESC);
+                    if (commandStart < 0
+                        || !this.#processPayload(payload.subarray(commandStart))) return;
+                }
+                if (this.parser.readPending) this.pendingResponseOpcode = opcode;
                 break;
             case GdsConsts.Op.SAVE_SCREEN:
-                if (!this.#isScreenControlPayload(payload, 0x02)) {
-                    this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
-                    return;
-                }
-                {
-                    const token = this.screen.saveScreen();
-                    this.#sendOpcode(GdsConsts.Op.SAVE_SCREEN,
+                if (this.#isScreenControlPayload(payload, 0x02, true)) {
+                    const token = this.parser.saveScreen();
+                    this.#sendResponse(GdsConsts.Op.SAVE_SCREEN,
                         this.builder.buildSaveScreenResponse(token));
-                }
-                return;
-            case GdsConsts.Op.RESTORE_SCREEN:
-                if (!this.#isScreenControlPayload(payload, 0x12, true)) {
-                    this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
                     return;
                 }
+                // This opcode may also carry an ordinary command stream.
+                // Only an ESC + Save Screen prefix selects the direct
+                // screen-image exchange above.
+                if (!payload.length || !this.#processPayload(payload)) return;
+                break;
+            case GdsConsts.Op.RESTORE_SCREEN:
                 {
+                    const commandStart = payload.indexOf(Order.ESC);
+                    const commandPayload = commandStart < 0
+                        ? null
+                        : payload.subarray(commandStart);
+                    if (!commandPayload
+                        || !this.#isScreenControlPayload(commandPayload, 0x12, true)) {
+                        this.#sendNegativeResponse(NegResp.REQUEST_ERROR);
+                        return;
+                    }
                     const rows = this.screen.rows;
                     const cols = this.screen.cols;
-                    const token = payload.subarray(2);
-                    if (!this.screen.restoreScreen(token.length ? token : null)) {
+                    const token = commandPayload.subarray(2);
+                    if (!this.parser.restoreScreen(token.length ? token : null)) {
                         this.#sendNegativeResponse(NegResp.STATE_ERROR);
                         return;
                     }
@@ -378,17 +415,52 @@ export class Terminal {
                 this.draw();
                 return;
             case GdsConsts.Op.READ_IMMEDIATE:
-                // Host wants an immediate response without an AID; we
-                // submit an "Enter with no data" reply.
-                this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
-                    this.builder.buildReadResponse({ includeAll: true, aid: 0x00 }));
-                return;
+                // Immediate-read opcode 0x06 returns all input fields
+                // only when at least one field has MDT set.
+                this.#sendResponse(opcode,
+                    this.builder.buildReadResponse({
+                        includeAll: this.screen.fields.some(field => field.modified)
+                            || this.screen.enptui.all.some(construct => construct.modified),
+                        aid: 0x00,
+                        sequential: true,
+                    }));
+                if (!payload.length) return;
+                if (!this.#processPayload(payload)) return;
+                // The opcode-level read was already answered above. An
+                // embedded Read Immediate command is correlation metadata,
+                // not a request for a second record.
+                this.parser.readImmediateRequested = false;
+                break;
+            case GdsConsts.Op.READ_MDT_IMMEDIATE_ALT:
+                this.#sendResponse(opcode,
+                    this.builder.buildReadResponse({ aid: 0x00, preserveNulls: true }));
+                if (!payload.length) return;
+                if (!this.#processPayload(payload)) return;
+                this.parser.readImmediateRequested = false;
+                break;
+            case GdsConsts.Op.READ_MDT_FIELDS:
+                this.parser.readType = GdsConsts.Op.READ_MDT_FIELDS;
+                this.parser.readPending = true;
+                this.parser.invited = true;
+                this.pendingResponseOpcode = opcode;
+                if (!payload.length) break;
+                if (!this.#processPayload(payload)) return;
+                break;
             case GdsConsts.Op.READ_SCREEN:
-                this.#sendOpcode(GdsConsts.Op.NO_OPERATION,
-                                 this.builder.buildReadScreenResponse());
-                return;
+            case GdsConsts.Op.READ_SCREEN_WITH_EA:
+            case GdsConsts.Op.READ_SCREEN_TO_PRINT:
+            case GdsConsts.Op.READ_SCREEN_TO_PRINT_WITH_EA:
+            case GdsConsts.Op.READ_SCREEN_TO_PRINT_WITH_GRID:
+            case GdsConsts.Op.READ_SCREEN_TO_PRINT_WITH_GRID_EA:
+                // Empty read-screen opcodes carry no command and therefore
+                // require no reply. With an embedded command, defer its
+                // requested response to the common post-dispatch path.
+                if (!payload.length) return;
+                if (!this.#processPayload(payload)) return;
+                break;
             case GdsConsts.Op.CANCEL_INVITE:
                 this.parser.invited = false;
+                this.parser.readPending = false;
                 this.#sendOpcode(GdsConsts.Op.CANCEL_INVITE, this.builder.buildCancelInvite());
                 return;
             case GdsConsts.Op.MESSAGE_LIGHT_ON:
@@ -400,21 +472,25 @@ export class Terminal {
                 this.oia.setMessageLight(false);
                 break;
             case GdsConsts.Op.NO_OPERATION:
-            default:
                 break;
+            default:
+                this.#sendNegativeResponse(NegResp.COMMAND_NOT_VALID);
+                return;
         }
 
         if (this.parser.saveScreenRequested) {
             const request = this.parser.saveScreenRequested;
             this.parser.saveScreenRequested = null;
-            this.#sendOpcode(opcode, this.builder.buildSaveScreenResponse(
+            this.#sendResponse(opcode, this.builder.buildSaveScreenResponse(
                 request.token, { partial: request.partial }));
         }
 
         // Query → answer with our capability descriptor.
         if (this.parser.queryRequested) {
             this.parser.queryRequested = false;
-            this.#sendOpcode(GdsConsts.Op.NO_OPERATION,
+            // A query reply is correlated to the request by retaining its
+            // opcode and setting the workstation response flag.
+            this.#sendResponse(opcode,
                 this.builder.buildQueryResponse({
                     modelKey: this.modelKey,
                     enhanced: this.modelKey === '5292-2',
@@ -422,46 +498,45 @@ export class Terminal {
         }
 
         if (this.parser.queryStationStateRequested) {
-            this.parser.queryStationStateRequested = false;
-            // We do not claim Query Station State in the Query Reply.
-            // Reject it explicitly if a host sends it anyway instead of
-            // leaving the controller waiting for a response forever.
-            this.#sendNegativeResponse(NegResp.USAGE_ERROR);
+            const request = this.parser.queryStationStateRequested;
+            this.parser.queryStationStateRequested = null;
+            this.#sendResponse(opcode,
+                this.builder.buildQueryStationStateResponse(request));
         }
 
         // Read Screen Immediate / To Print → dump the screen back.
         if (this.parser.readScreenRequested) {
             const readCommand = this.parser.readScreenRequested;
             this.parser.readScreenRequested = false;
+            const withGrid = readCommand === Cmd.READ_SCREEN_TO_PRINT_WITH_GRID
+                || readCommand === Cmd.READ_SCREEN_TO_PRINT_WITH_GRID_EA;
             const withEa = readCommand === Cmd.READ_SCREEN_WITH_EA
                 || readCommand === Cmd.READ_SCREEN_TO_PRINT_WITH_EA
                 || readCommand === Cmd.READ_SCREEN_TO_PRINT_WITH_GRID_EA;
-            this.#sendOpcode(GdsConsts.Op.NO_OPERATION, withEa
-                ? this.builder.buildReadScreenWithExtendedAttributes()
-                : this.builder.buildReadScreenResponse());
+            this.#sendResponse(opcode, withGrid
+                ? this.builder.buildReadScreenWithGridLines({ extended: withEa })
+                : withEa
+                    ? this.builder.buildReadScreenWithExtendedAttributes()
+                    : this.builder.buildReadScreenResponse());
         }
 
         if (this.parser.readImmediateRequested) {
             this.parser.readImmediateRequested = false;
-            this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
+            const includeAll = this.parser.readType === Cmd.READ_IMMEDIATE
+                && (this.screen.fields.some(field => field.modified)
+                    || this.screen.enptui.all.some(construct => construct.modified));
+            this.#sendResponse(opcode,
                 this.builder.buildReadResponse({
                     aid: 0x00,
-                    includeAll: this.parser.readType === Cmd.READ_IMMEDIATE,
+                    includeAll,
+                    preserveNulls: this.parser.readType === Cmd.READ_MDT_IMMEDIATE_ALT,
+                    sequential: this.parser.readType === Cmd.READ_IMMEDIATE,
                 }));
         }
 
         if (this.screen.pendingCursor >= 0) {
             this.screen.cursor = this.screen.pendingCursor;
             this.screen.pendingCursor = -1;
-        } else if (this.parser.readPending) {
-            // The host invited input but didn't IC. Park the cursor at
-            // the first focusable position - any SF input field OR
-            // ENPTUI radio/checkbox/push-button item, whichever comes
-            // first in buffer order. Without the ENPTUI fallback,
-            // screens that have only checkboxes / radios leave the
-            // cursor stuck at (1,1).
-            const target = this.screen.firstFocusable();
-            if (target !== null) this.screen.cursor = target;
         }
         if (!this.screen.keyboardLocked && this.screen.queuedPointerAid) {
             const queuedAid = this.screen.queuedPointerAid;
@@ -481,9 +556,8 @@ export class Terminal {
             debug.warn('parser error:', err);
             this.parser.clearTransientRequests();
             if (err?.negativeResponse)
-                this.#sendNegativeResponse(err.stateError
-                    ? NegResp.STATE_ERROR
-                    : NegResp.REQUEST_ERROR);
+                this.#sendNegativeResponse(err.senseCode
+                    ?? (err.stateError ? NegResp.STATE_ERROR : NegResp.REQUEST_ERROR));
             return false;
         }
     }
@@ -495,7 +569,13 @@ export class Terminal {
     }
 
     #sendNegativeResponse (code) {
-        this.#sendOpcode(GdsConsts.Op.NO_OPERATION, Uint8Array.of(code), GdsConsts.Flag.ERR);
+        const sense = Number(code) >>> 0;
+        this.#sendOpcode(GdsConsts.Op.NO_OPERATION, Uint8Array.of(
+            (sense >>> 24) & 0xFF,
+            (sense >>> 16) & 0xFF,
+            (sense >>> 8) & 0xFF,
+            sense & 0xFF,
+        ), GdsConsts.Flag.ERR);
     }
 
     // ---- outbound ------------------------------------------------------
@@ -507,8 +587,38 @@ export class Terminal {
         this.telnet.sendRecord(framed);
     }
 
+    #sendResponse (opcode, payload, flags = 0) {
+        this.#sendOpcode(opcode, payload, flags | GdsConsts.Flag.RESPONSE);
+    }
+
     sendAid (aidByte) {
         if (!this.telnet) return;
+        if (this.screen.sysreqMode) {
+            if (aidByte === Aid.ENTER) {
+                const request = this.screen.systemRequestData();
+                this.#sendOpcode(GdsConsts.Op.NO_OPERATION, request, GdsConsts.Flag.SRQ);
+                this.screen.endSystemRequest();
+                this.oia.setSystem('SYS');
+                this.flashStatus('system request sent');
+            } else {
+                this.screen.endSystemRequest();
+                this.screen.alarm = true;
+                this.oia.setSystem('SYS');
+                this.flashStatus('invalid key during system request', 'error', 1600);
+            }
+            this.draw();
+            return;
+        }
+        if (aidByte === Aid.HELP && this.screen.errorMode) {
+            const errorCode = this.parser.errorCode ?? Uint8Array.of(0, 0);
+            this.parser.clearErrorMode();
+            this.screen.errorHelpResumeLocked = this.screen.keyboardLocked;
+            this.screen.errorHelpMode = true;
+            this.#sendOpcode(GdsConsts.Op.NO_OPERATION, errorCode, GdsConsts.Flag.HLP);
+            this.screen.keyboardLocked = true;
+            this.draw();
+            return;
+        }
         if (this.screen.keyboardLocked && aidByte !== Aid.HELP) {
             this.screen.alarm = true;
             this.flashStatus('keyboard locked by host', 'error', 1200);
@@ -516,11 +626,14 @@ export class Terminal {
             return;
         }
         const pf = pfNumberFor(aidByte);
+        // Help and Clear bypass field-entry validation. Print and Roll
+        // are short-read/navigation AIDs on the wire, but they still run
+        // mandatory/FER/self-check validation before leaving the terminal.
         const shortAid = aidByte === Aid.HELP || aidByte === Aid.CLEAR
-            || aidByte === Aid.PRINT || aidByte === Aid.ROLL_UP
-            || aidByte === Aid.ROLL_DOWN || aidByte === Aid.ROLL_LEFT
-            || aidByte === Aid.ROLL_RIGHT;
-        const validation = shortAid ? null : this.screen.validateForAid();
+            || aidByte === Aid.HOME || aidByte === 0x3D;
+        const validation = shortAid ? null : this.screen.validateForAid({
+            skipMandatoryEntry: pf !== null && this.screen.isSohShortReadPf(pf),
+        });
         if (validation) {
             this.screen.cursor = (validation.field.start + 1) % this.screen.size;
             this.screen.alarm = true;
@@ -530,21 +643,45 @@ export class Terminal {
         }
         debug.log(`sendAid 0x${aidByte.toString(16).padStart(2,'0')} at row=${(this.screen.cursor/this.screen.cols|0)+1} col=${(this.screen.cursor%this.screen.cols)+1}`);
         if (aidByte === Aid.HELP) {
-            this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
-                             this.builder.buildAidResponse(aidByte),
-                             GdsConsts.Flag.HLP);
+            this.#sendResponse(this.pendingResponseOpcode,
+                this.builder.buildAidResponse(aidByte));
             this.screen.keyboardLocked = true;
             this.draw();
             return;
         }
-        this.#sendOpcode(GdsConsts.Op.PUT_GET_OPERATION,
-                         this.builder.buildAidResponse(aidByte, {
-                             includeAll: this.parser.readType === 0x42,
-                             preserveNulls: this.parser.readType === 0x83,
+        const readType = this.parser.readType;
+        const masterMdt = this.screen.fields.some(field => field.modified)
+            || this.screen.enptui.all.some(construct => construct.modified);
+        const sequential = readType === GdsConsts.Op.READ_IMMEDIATE
+            || readType === Cmd.READ_INPUT_FIELDS || readType === Cmd.READ_IMMEDIATE;
+        this.#sendResponse(this.pendingResponseOpcode,
+                           this.builder.buildAidResponse(aidByte, {
+                             includeAll: sequential && masterMdt,
+                             sequential,
+                             preserveNulls: readType === GdsConsts.Op.READ_MDT_IMMEDIATE_ALT
+                                 || readType === Cmd.READ_MDT_IMMEDIATE_ALT,
                              shortRead: pf !== null && this.screen.isSohShortReadPf(pf),
                          }));
         this.screen.keyboardLocked = true;
         this.parser.readPending = false;
+        this.parser.invited = false;
+        this.draw();
+    }
+
+    clearErrorMode () {
+        this.screen.alarm = false;
+        this.parser.clearErrorMode();
+        this.flashStatus('reset');
+        this.draw();
+    }
+
+    resetOperatorState () {
+        const wasSystemRequest = this.screen.sysreqMode;
+        this.input.resetTransientState();
+        this.screen.resetOperatorState();
+        this.parser.clearErrorMode();
+        if (wasSystemRequest) this.oia.setSystem('SYS');
+        this.flashStatus('reset');
         this.draw();
     }
 
@@ -555,16 +692,21 @@ export class Terminal {
 
     sendSystemRequest () {
         if (!this.telnet) return;
-        this.#sendOpcode(GdsConsts.Op.NO_OPERATION, new Uint8Array(0), GdsConsts.Flag.SRQ);
-        this.screen.keyboardLocked = true;
+        if (!this.screen.beginSystemRequest()) return;
         this.oia.setSystem('SRQ');
+        this.flashStatus('enter system request');
         this.draw();
     }
 
     type (str) {
         if (this.screen.keyboardLocked) return;
-        for (let i = 0; i < str.length; i++)
-            this.screen.typeByte(this.screen.ebcdic.fromCharCode(str.charCodeAt(i)));
+        for (let i = 0; i < str.length; i++) {
+            this.screen.typeCharacter(str[i]);
+            // Auto Enter is raised at the exact character that fills the
+            // field. A paste may contain more text, but none of it belongs
+            // to the next host transaction or field.
+            if (this.screen.autoEnterRequested) break;
+        }
         if (this.screen.autoEnterRequested) {
             this.screen.autoEnterRequested = false;
             this.sendAid(Aid.ENTER);
@@ -578,6 +720,39 @@ export class Terminal {
             this.draw();
             return;
         }
+        if (this.screen.autoEnterRequested) {
+            this.screen.autoEnterRequested = false;
+            this.sendAid(Aid.ENTER);
+            return;
+        }
+        this.draw();
+    }
+
+    fieldSignExit (negative) {
+        if (!this.screen.fieldSignExit(negative)) {
+            this.draw();
+            return;
+        }
+        if (this.screen.autoEnterRequested) {
+            this.screen.autoEnterRequested = false;
+            this.sendAid(Aid.ENTER);
+            return;
+        }
+        this.draw();
+    }
+
+    insertDup () {
+        this.screen.insertDupOrFieldMark(true);
+        if (this.screen.autoEnterRequested) {
+            this.screen.autoEnterRequested = false;
+            this.sendAid(Aid.ENTER);
+            return;
+        }
+        this.draw();
+    }
+
+    insertFieldMark () {
+        this.screen.insertDupOrFieldMark(false);
         if (this.screen.autoEnterRequested) {
             this.screen.autoEnterRequested = false;
             this.sendAid(Aid.ENTER);

@@ -20,7 +20,8 @@
 // terminal can return a negative response instead of desynchronising.
 
 import { ENPTUI_CLASS, Sf, ConstructKind, SenseCode } from './Constants.js';
-import { decodeSelectionField, buildAttachedScrollBar } from './primitives/SelectionField.js';
+import { decodeSelectionField, buildAttachedScrollBar,
+    refreshSelectionPresentation } from './primitives/SelectionField.js';
 import { decodeWindow }         from './primitives/Window.js';
 import { decodeScrollBar }      from './primitives/ScrollBar.js';
 import { EnptuiDataStreamError, enptuiFail as fail } from './DataStreamError.js';
@@ -48,11 +49,14 @@ const G_LEFT_V  = 0x08;
  *  startCol) and ORs in the appropriate bit flags. `repeat1` / `repeat2`
  *  control rule spacing/repetition according to the construct type. */
 function applyGridMinor (grid, screen, rec) {
-    const set = (rec.hvOptions & 0x80) !== 0;
+    // In the grid minor options, 0x80 means remove the named edges;
+    // an unset bit means draw them. This polarity is intentionally the
+    // reverse of the major pre-flag that clears the complete buffer.
+    const clear = (rec.hvOptions & 0x80) !== 0;
     const op = (row, col, mask) => {
         if (row < 0 || row >= screen.rows || col < 0 || col >= screen.cols) return;
         const idx = row * screen.cols + col;
-        grid[idx] = set ? (grid[idx] | mask) : (grid[idx] & ~mask);
+        grid[idx] = clear ? (grid[idx] & ~mask) : (grid[idx] | mask);
     };
     const r0 = rec.startRow - 1;
     const c0 = rec.startCol - 1;
@@ -63,7 +67,7 @@ function applyGridMinor (grid, screen, rec) {
         const mask = rec.constructType === GRID_UPPER_H ? G_UPPER_H : G_LOWER_H;
         const count = Math.max(1, rec.repeat1);
         const spacing = rec.hasRepeat2 ? rec.repeat2 : 1;
-        if (spacing < 1) return false;
+        if (count > 1 && spacing < 1) return false;
         for (let n = 0; n < count; n++)
             for (let c = 0; c < rec.width; c++) op(r0 + n * spacing, c0 + c, mask);
         return true;
@@ -74,7 +78,7 @@ function applyGridMinor (grid, screen, rec) {
         const mask = rec.constructType === GRID_LEFT_V ? G_LEFT_V : G_RIGHT_V;
         const count = Math.max(1, rec.repeat1);
         const spacing = rec.hasRepeat2 ? rec.repeat2 : 1;
-        if (spacing < 1) return false;
+        if (count > 1 && spacing < 1) return false;
         for (let n = 0; n < count; n++)
             for (let r = 0; r < rec.height; r++) op(r0 + r, c0 + n * spacing, mask);
         return true;
@@ -133,10 +137,28 @@ function validateGridMinor (rec, screen) {
     return 0;
 }
 
+function equivalentSelectionField (left, right) {
+    return left.kind === right.kind
+        && left.cursorAtStart === right.cursorAtStart
+        && left.textSize === right.textSize
+        && left.numOfRows === right.numOfRows
+        && left.numOfCols === right.numOfCols
+        && left.numOfNulls === right.numOfNulls
+        && left.scrollAttached === right.scrollAttached;
+}
+
+function equivalentScrollBar (left, right) {
+    return left.kind === ConstructKind.SCROLL_BAR
+        && right.kind === ConstructKind.SCROLL_BAR
+        && left.cursorAtStart === right.cursorAtStart
+        && left.length === right.length
+        && left.direction === right.direction;
+}
+
 /**
  * @param {Uint8Array} bytes        full WTDSF body (segments back-to-back)
  * @param {object}     screen       ScreenBuffer instance, used both for
- *                                  read (cursor position when a segment
+ *                                  read (write address when a segment
  *                                  is "at current SBA") and write (push
  *                                  decoded constructs onto screen.enptui).
  */
@@ -171,32 +193,65 @@ function dispatch (minor, payload, screen) {
         case Sf.DEFINE_SEL_FLD: {
             const sf = decodeSelectionField(payload, screen);
             if (!sf) fail('invalid ENPTUI selection field', SenseCode.WSF_PARM);
-            // A refreshed field can change between menu/choice/button
-            // forms at the same SBA. Remove every prior selection form
-            // and its linked scrollbar before installing the new graph.
-            const prior = screen.enptui.removeWhere(c =>
-                c.cursorAtStart === screen.cursor
-                && [ConstructKind.SELECTION_FIELD, ConstructKind.MENU_BAR,
-                    ConstructKind.PUSH_BUTTONS].includes(c.kind));
-            for (const parent of prior) screen.enptui.removeChildrenLinkedTo(parent);
+            // SBA is only the anchor, not the complete identity. A smaller
+            // construct may legitimately be defined over an older one at the
+            // same address. Replace only an equivalent pseudo-field; normal
+            // rectangle coverage below handles a new field that fully hides
+            // an older construct.
+            const equivalent = screen.enptui.all.find(c =>
+                equivalentSelectionField(sf, c));
+            // A menu refresh is allowed to omit Draw Menu Bar. In that form
+            // the separator presentation is inherited from the equivalent
+            // menu already on the presentation space.
+            if (sf.kind === ConstructKind.MENU_BAR
+                && !sf.menuSeparator && equivalent?.menuSeparator) {
+                sf.menuSeparator = structuredClone(equivalent.menuSeparator);
+                sf.boundsWidth = sf.menuSeparator.endCol - sf.menuSeparator.startCol + 1;
+            }
+            const prior = equivalent
+                ? screen.enptui.removeWhere(c => c === equivalent)
+                : [];
+            const removed = [...new Set([
+                ...prior, ...screen.enptui.removeCoveredBy(sf),
+            ])];
+            for (const parent of [...removed])
+                removed.push(...screen.enptui.removeChildrenLinkedTo(parent));
+            sf.formatOrder = screen.allocateFormatOrder();
             screen.enptui.add(sf);
             // When the SF carries an attached scroll bar, create it
             // as a separate construct linked to its parent so
             // REMOVE_GUI_SEL_FLD cascades correctly and the user
             // can drag/click the scroll thumb independently.
             const attached = buildAttachedScrollBar(sf);
-            if (attached) screen.enptui.add(attached);
+            if (attached) {
+                attached.formatOrder = screen.allocateFormatOrder();
+                screen.enptui.add(attached);
+            }
+            refreshSelectionPresentation(screen, removed);
             return;
         }
         case Sf.CREATE_WINDOW: {
             const w = decodeWindow(payload, screen);
             if (!w) fail('invalid ENPTUI window', SenseCode.WSF_PARM);
             // Creating a window clears field constructs fully covered by
-            // its rectangle in IBM HOD. Remove attached children as part
+            // its rectangle. Remove attached children as part
             // of the same graph operation before the new window is drawn.
-            const covered = screen.enptui.removeChildrenOf(w);
-            for (const parent of covered) screen.enptui.removeChildrenLinkedTo(parent);
+            const covered = screen.enptui.removeCoveredBy(w);
+            const removed = [...covered];
+            for (const parent of removed)
+                removed.push(...screen.enptui.removeChildrenLinkedTo(parent));
+            for (const oldWindow of covered.filter(c => c.kind === ConstructKind.WINDOW))
+                removed.push(...screen.enptui.removeChildrenOf(oldWindow));
+
+            // Window creation replaces its complete presentation-space
+            // footprint. Subsequent ordinary writes inside the content
+            // area remain visible; the renderer therefore draws only the
+            // window decoration, not an opaque cover on every frame.
+            screen.clearPresentationRect(
+                w.topRow, w.leftCol, w.height, w.width);
             screen.enptui.add(w);
+            screen.currentEnptuiWindowAddress = w.cursorAtStart;
+            refreshSelectionPresentation(screen, removed);
             // IBM clears any pre-existing grid edges covered by the new
             // window; otherwise rules bleed through its background.
             for (const grid of screen.enptui.constructs.filter(c => c.kind === ConstructKind.GRID)) {
@@ -210,7 +265,20 @@ function dispatch (minor, payload, screen) {
         case Sf.SCROLL_BAR_FLD: {
             const sb = decodeScrollBar(payload, screen);
             if (!sb) fail('invalid ENPTUI scroll bar', SenseCode.WSF_PARM);
+            const equivalent = screen.enptui.all.find(c => equivalentScrollBar(sb, c));
+            const prior = equivalent
+                ? screen.enptui.removeWhere(c => c === equivalent)
+                : [];
+            const removedConstructs = [...new Set([
+                ...prior, ...screen.enptui.removeCoveredBy(sb),
+            ])];
+            for (const removed of [...removedConstructs]) {
+                if (removed.parent) removed.parent.attachedScrollBar = null;
+                removedConstructs.push(...screen.enptui.removeChildrenLinkedTo(removed));
+            }
+            sb.formatOrder = screen.allocateFormatOrder();
             screen.enptui.add(sb);
+            refreshSelectionPresentation(screen, removedConstructs);
             return;
         }
         case Sf.UNREST_WIN_CURSOR: {
@@ -220,7 +288,9 @@ function dispatch (minor, payload, screen) {
             // We flip the `cursorRestricted` flag on the matching window
             // so InputController's arrow-key clamp lets through.
             if (payload.length !== 2) fail('invalid Unrestrict Window length', SenseCode.MAJOR_LEN_ERROR);
-            const win = screen.enptui.constructs.findLast(c => c.kind === ConstructKind.WINDOW);
+            const win = screen.enptui.all.findLast(c =>
+                c.kind === ConstructKind.WINDOW
+                && c.cursorAtStart === screen.currentEnptuiWindowAddress);
             if (win) win.cursorRestricted = false;
             return;
         }
@@ -236,26 +306,30 @@ function dispatch (minor, payload, screen) {
             const flag1 = payload[0];
 
             if ((flag1 & 0xC0) !== 0) {
-                // Field-targeted write: locate the SF at the current
-                // SBA and overwrite its data cells.
-                const field = screen.fields.find(f => f.start === screen.cursor);
-                if (!field) {
-                    fail('WRITE_DATA at cursor with no field present', SenseCode.WRITE_DATA_ERROR);
-                }
-                const wasModified = field.modified;
-                const clearTarget = () => {
-                    for (let k = 0; k < field.length; k++) {
-                        const idx = (field.start + 1 + k) % screen.size;
-                        const cell = screen.cells[idx];
-                        cell.byte = 0;
-                        cell.glyph = ' ';
+                // The current SBA must address the first data position of
+                // a formatted field. `Field.start` is the non-display SF
+                // attribute cell in ScreenBuffer, so looking it up by an
+                // exact start match is one position too early.
+                const physicalField = screen.fieldAt(screen.writeAddress);
+                const field = physicalField
+                    && screen.writeAddress === (physicalField.start + 1) % screen.size
+                    ? physicalField
+                    : null;
+                const clearTargets = targets => {
+                    for (const target of targets) {
+                        for (let k = 0; k < target.length; k++) {
+                            const idx = (target.start + 1 + k) % screen.size;
+                            screen.enptui.occludeInactiveAt(idx, screen.cols);
+                            const cell = screen.cells[idx];
+                            cell.byte = 0;
+                            cell.glyph = ' ';
+                        }
                     }
                 };
                 if (flag1 & 0x40) {
-                    // CCSID-based (Unicode) write. We don't truly support
-                    // Unicode planes on the screen buffer yet - decode
-                    // pairs of bytes as a UTF-16BE codepoint and stash
-                    // the EBCDIC nearest-match.
+                    // CCSID-based write. Decode UTF-16BE code units into
+                    // the presentation model while retaining an SBCS
+                    // fallback byte for ordinary terminal operations.
                     // payload: [0]=flag1 [1]=flag2 [2..3]=ccsid [4..]=data
                     const ccsid = payload.length >= 4 ? (payload[2] << 8) | payload[3] : -1;
                     if (![1200, 13488, 17584].includes(ccsid)) {
@@ -264,31 +338,58 @@ function dispatch (minor, payload, screen) {
                     const data = payload.subarray(4);
                     if (payload.length < 4 || data.length % 2 !== 0)
                         fail('invalid CCSID WRITE_DATA payload', SenseCode.WRITE_DATA_ERROR);
-                    if (data.length / 2 > field.length)
+                    const targets = field ? screen.fieldChain(field) : [];
+                    const positions = [];
+                    for (const target of targets) {
+                        for (let k = 0; k < Math.floor(target.length / 2); k++)
+                            positions.push((target.start + 1 + k) % screen.size);
+                    }
+                    if (field && data.length / 2 > positions.length)
                         fail('CCSID WRITE_DATA exceeds target field', SenseCode.WRITE_DATA_TOO_LONG);
-                    clearTarget();
-                    for (let i = 0, k = 0; i + 1 < data.length && k < field.length; i += 2, k++) {
+                    const modified = targets.map(target => target.modified);
+                    if (field) clearTargets(targets);
+                    for (let i = 0, k = 0; i + 1 < data.length; i += 2, k++) {
                         const cp = (data[i] << 8) | data[i + 1];
-                        const idx = (field.start + 1 + k) % screen.size;
+                        const idx = field
+                            ? positions[k]
+                            : (screen.writeAddress + k) % screen.size;
+                        screen.enptui.occludeInactiveAt(idx, screen.cols);
                         const cell = screen.cells[idx];
                         cell.byte = screen.ebcdic.fromCharCode(cp);
                         cell.glyph = String.fromCharCode(cp);
+                        cell.attributePlace = false;
+                        cell.startField = false;
                     }
+                    targets.forEach((target, i) => { target.modified = modified[i]; });
+                    if (!field)
+                        screen.setWriteAddressIndex(
+                            (screen.writeAddress + data.length / 2) % screen.size);
                 } else {
                     // Standard EBCDIC write. Payload: flag1, reserved,
-                    // then data bytes.
+                    // then data bytes. Continued-field segments form one
+                    // logical target and are filled in segment order.
+                    if (!field)
+                        fail('WRITE_DATA at SBA with no field present', SenseCode.WRITE_DATA_ERROR);
                     const data = payload.subarray(2);
-                    if (data.length > field.length)
+                    const targets = screen.fieldChain(field);
+                    const capacity = targets.reduce((sum, target) => sum + target.length, 0);
+                    if (data.length > capacity)
                         fail('WRITE_DATA exceeds target field', SenseCode.WRITE_DATA_TOO_LONG);
-                    clearTarget();
-                    for (let k = 0; k < data.length && k < field.length; k++) {
-                        const idx = (field.start + 1 + k) % screen.size;
-                        const cell = screen.cells[idx];
-                        cell.byte = data[k];
-                        cell.glyph = screen.ebcdic.toChar(data[k]);
+                    const modified = targets.map(target => target.modified);
+                    clearTargets(targets);
+                    let source = 0;
+                    for (const target of targets) {
+                        for (let k = 0; k < target.length && source < data.length; k++, source++) {
+                            const idx = (target.start + 1 + k) % screen.size;
+                            screen.enptui.occludeInactiveAt(idx, screen.cols);
+                            const cell = screen.cells[idx];
+                            cell.byte = data[source];
+                            cell.glyph = screen.ebcdic.toChar(data[source]);
+                        }
                     }
+                    targets.forEach((target, i) => { target.modified = modified[i]; });
+                    screen.applyWordWrap(field, (targets[0].start + 1) % screen.size);
                 }
-                field.modified = wasModified;
                 return;
             }
 
@@ -305,7 +406,13 @@ function dispatch (minor, payload, screen) {
             }
             if (payload.length < 7 || (payload.length - 3) % 4 !== 0)
                 fail('invalid programmable mouse-button length', SenseCode.MAJOR_LEN_ERROR);
-            const definitionsByEvent = new Map();
+            // Definitions are incremental. A later segment replaces only
+            // entries with the same first event; the three-byte form is
+            // the operation that explicitly clears the complete table.
+            const existing = screen.enptui.all.find(
+                c => c.kind === ConstructKind.MOUSE_EVENTS)?.definitions ?? [];
+            const definitionsByEvent = new Map(
+                existing.map(definition => [definition.firstEvent, definition]));
             for (let pos = 3; pos < payload.length; pos += 4) {
                 const flags = payload[pos];
                 const firstEvent = payload[pos + 1];
@@ -322,7 +429,6 @@ function dispatch (minor, payload, screen) {
             }
             const definitions = [...definitionsByEvent.values()];
             screen.enptui.removeWhere(c => c.kind === ConstructKind.MOUSE_EVENTS);
-            screen.queuedPointerAid = null;
             screen.pointerMarker = null;
             screen.enptui.add({ kind: ConstructKind.MOUSE_EVENTS, cursorAtStart: -1, definitions });
             return;
@@ -330,16 +436,18 @@ function dispatch (minor, payload, screen) {
         case Sf.REMOVE_GUI_SEL_FLD: {
             if (payload.length !== 2) fail('invalid Remove Selection Field length', SenseCode.MAJOR_LEN_ERROR);
             // Remove the selection field / menu bar / push buttons at
-            // the cursor, AND any attached scroll bar that referenced
+            // the current SBA, AND any attached scroll bar that referenced
             // it as parent. The ENPTUI clear-construct path does
             // the same cascade so the user doesn't see a phantom
             // scrollbar after its list disappears.
-            const removedSel = [
-                ...screen.enptui.removeAt(screen.cursor, ConstructKind.SELECTION_FIELD),
-                ...screen.enptui.removeAt(screen.cursor, ConstructKind.MENU_BAR),
-                ...screen.enptui.removeAt(screen.cursor, ConstructKind.PUSH_BUTTONS),
-            ];
-            for (const parent of removedSel) screen.enptui.removeChildrenLinkedTo(parent);
+            const parent = screen.enptui.inactivateFirst(construct =>
+                construct.cursorAtStart === screen.writeAddress
+                && [ConstructKind.SELECTION_FIELD, ConstructKind.MENU_BAR,
+                    ConstructKind.PUSH_BUTTONS].includes(construct.kind));
+            if (parent) screen.enptui.inactivateChildrenLinkedTo(parent);
+            // Removing the GUI field removes its interaction/decoration,
+            // but Choice Text already written to the presentation space
+            // remains until the host overwrites it.
             return;
         }
         case Sf.REMOVE_GUI_WINDOW: {
@@ -347,20 +455,57 @@ function dispatch (minor, payload, screen) {
             // Cascade: every selection field or scroll bar that lay
             // entirely inside the window goes away too.
             const menuPullDown = (payload[0] & 0x40) !== 0;
-            const removedWindows = screen.enptui.removeWhere(c =>
-                c.kind === ConstructKind.WINDOW && c.cursorAtStart === screen.cursor
+            const currentWindow = screen.enptui.all.findLast(c =>
+                c.kind === ConstructKind.WINDOW
+                && c.cursorAtStart === screen.currentEnptuiWindowAddress);
+            const removedWindow = screen.enptui.inactivateFirst(c =>
+                c.kind === ConstructKind.WINDOW && c.cursorAtStart === screen.writeAddress
                 && c.menuPullDown === menuPullDown);
-            for (const w of removedWindows) screen.enptui.removeChildrenOf(w);
+            if (removedWindow) {
+                const w = removedWindow;
+                const bounds = screen.enptui.boundsOf(w);
+                screen.enptui.inactivateWhere(construct => {
+                    if (![ConstructKind.SELECTION_FIELD, ConstructKind.MENU_BAR,
+                        ConstructKind.PUSH_BUTTONS, ConstructKind.SCROLL_BAR].includes(construct.kind))
+                        return false;
+                    const child = screen.enptui.boundsOf(construct);
+                    return child && bounds
+                        && child.top >= bounds.top && child.left >= bounds.left
+                        && child.bottom <= bounds.bottom && child.right <= bounds.right;
+                });
+            }
+            if (removedWindow === currentWindow)
+                screen.currentEnptuiWindowAddress = null;
             return;
         }
         case Sf.REMOVE_SCROLL_BAR_FLD:
             if (payload.length !== 2) fail('invalid Remove Scroll Bar length', SenseCode.MAJOR_LEN_ERROR);
-            screen.enptui.removeAt(screen.cursor, ConstructKind.SCROLL_BAR);
+            screen.enptui.inactivateFirst(construct =>
+                construct.cursorAtStart === screen.writeAddress
+                && construct.kind === ConstructKind.SCROLL_BAR);
             return;
-        case Sf.REMOVE_ALL_GUI:
+        case Sf.REMOVE_ALL_GUI: {
             if (payload.length !== 3) fail('invalid Remove All GUI length', SenseCode.MAJOR_LEN_ERROR);
-            screen.enptui.clear();
+            const guiKinds = [ConstructKind.WINDOW, ConstructKind.SELECTION_FIELD,
+                ConstructKind.MENU_BAR, ConstructKind.PUSH_BUTTONS, ConstructKind.SCROLL_BAR];
+            const redrawBasicPresentation = (payload[1] & 0x80) !== 0;
+            const removed = screen.enptui.inactivateWhere(
+                construct => guiKinds.includes(construct.kind));
+            // Redraw requests materialise the low-byte character form of
+            // graphical constructs before their pseudo-fields disappear.
+            // Scroll bars deliberately retain their last graphical image;
+            // push-button removal already suppresses its frame in the
+            // inactive renderer.
+            if (redrawBasicPresentation) {
+                for (const construct of removed) {
+                    if ([ConstructKind.WINDOW, ConstructKind.SELECTION_FIELD,
+                        ConstructKind.MENU_BAR].includes(construct.kind))
+                        construct.basicPresentation = true;
+                }
+            }
+            screen.currentEnptuiWindowAddress = null;
             return;
+        }
         case Sf.DEFINE_GRID: {
             // Per the ENPTUI grid definition.
             // Major header (after class+minor):
@@ -373,7 +518,7 @@ function dispatch (minor, payload, screen) {
             //   [0] minorLen
             //   [1] constructType (0..7 - UPPER_H/LOWER_H/LEFT_V/RIGHT_V/
             //                       PLAIN_BOX/H_RULED/V_RULED/HV_RULED)
-            //   [2] hvOptions (0x80 = set, else clear)
+            //   [2] hvOptions (0x80 = clear, else set)
             //   [3] startRow (1-based)
             //   [4] startCol (1-based)
             //   [5] width   (columns spanned for H types)
@@ -429,7 +574,7 @@ function dispatch (minor, payload, screen) {
             screen.enptui.removeWhere(c => c.kind === ConstructKind.GRID);
             screen.enptui.add({
                 kind:          'grid',
-                cursorAtStart: screen.cursor,
+                cursorAtStart: screen.writeAddress,
                 gridBuf:       grid,
                 records,
             });

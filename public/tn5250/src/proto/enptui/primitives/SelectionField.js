@@ -52,11 +52,10 @@
 // We honour all of these by walking the byte pointer; in the common
 // case (flag1 = 0x00) text starts right at offset 5.
 //
-// Once parsed, we paint the indicator + item text directly into the
-// screen cells, exactly the way real IBM hardware does — the host
-// expects the *client* to be responsible for rendering these. Then the
-// Renderer overlay only has to substitute fancier UTF-8 markers for the
-// raw EBCDIC indicator bytes (which look like '.'/'/'/space on hardware).
+// Once parsed, the dispatcher materialises the indicator + item text in
+// the presentation space. Keeping parsing and painting separate is
+// important: redefining or removing a construct must clear the old
+// footprint before the remaining constructs are painted again.
 
 import { ENPTUI_CLASS, SelType, ConstructKind, SenseCode, isPushButton, isSingleSelect, isMultiSelect, isMenuBar } from '../Constants.js';
 import { scrollBarMetrics } from './ScrollBar.js';
@@ -117,10 +116,13 @@ function applyChoiceAttrs (entry, attrs) {
 
 /**
  * @param {Uint8Array} body   bytes after class+minor (= payload[0] is flag1)
- * @param {object}     screen ScreenBuffer (for cursorAtStart + cell write-through)
+ * @param {object}     screen ScreenBuffer (for current SBA + cell write-through)
  */
 export function decodeSelectionField (body, screen) {
-    if (body.length < 16)
+    // The fixed header must be followed by at least one byte belonging
+    // to the first minor structure. A header-only field is truncated,
+    // not an empty but otherwise valid selection field.
+    if (body.length < 17)
         fail('invalid ENPTUI selection-field major length', SenseCode.INVALID_MINOR_LENGTH);
 
     // ---- header ----------------------------------------------------
@@ -131,8 +133,8 @@ export function decodeSelectionField (body, screen) {
     const guiDeviceChar = body[4];
     // body[5..8] reserved (4 bytes)
     const textSize      = body[9];
-    const numOfRows     = body[10] || 1;
-    const numOfCols     = body[11] || 1;
+    const numOfRows     = body[10];
+    const numOfCols     = body[11];
     let numOfNulls      = body[12];
     if (numOfCols === 1) numOfNulls = 0;
     // body[13] reserved
@@ -145,6 +147,7 @@ export function decodeSelectionField (body, screen) {
     const guiKind = guiDeviceChar & 0xF0;
 
     if ((flag1 & 0xC0) === 0x40) return null;
+    if (numOfRows < 1 || numOfCols < 1) return null;
     if (isPB && guiKind === 0x00) return null;
     if (!isMenu && !isPB && [0x20, 0x30, 0x40, 0x50, 0x60].includes(guiKind)) return null;
 
@@ -156,7 +159,7 @@ export function decodeSelectionField (body, screen) {
     // the button text right and break centering.
     const drawIndicator = !isMenu && !isPB && guiKind === 0x00;
 
-    // IBM HOD advances over exactly two 32-bit quantities here. We capture
+    // The attached-scroll header has exactly two 32-bit quantities. We capture
     // totalRows/sliderPos so the
     // attached scrollbar construct (created after the items are
     // parsed) can render with the correct thumb position.
@@ -166,11 +169,13 @@ export function decodeSelectionField (body, screen) {
         SelType.PUSH_BUTTON_PULL].includes(selectionType)) return null;
     let attachedScrollTotal = 0;
     let attachedScrollSlider = 0;
-    if (scrollAttached && body.length < 24)
+    if (scrollAttached && body.length < 25)
         fail('truncated attached-scrollbar header', SenseCode.INVALID_MINOR_LENGTH);
     if (scrollAttached && body.length >= 24) {
         attachedScrollTotal  = readU32(body, 16);
         attachedScrollSlider = readU32(body, 20);
+        if (attachedScrollTotal < 1 || attachedScrollSlider > attachedScrollTotal)
+            return null;
     }
     let pos = 16 + (scrollAttached ? 8 : 0);
 
@@ -212,7 +217,7 @@ export function decodeSelectionField (body, screen) {
     const oneRow = isMenu || numOfRows === 1;
     let layoutCols = numOfCols;
     if (isMenu && items.some(item => item.newRow)) {
-        // HOD rectangularises irregular menu rows with invisible,
+        // Irregular menu rows are rectangularised with invisible,
         // non-cursorable ChoiceText entries. Those entries deliberately
         // remain in the response index space, so a selected item after a
         // short row gets the same ordinal the IBM terminal sends.
@@ -256,7 +261,7 @@ export function decodeSelectionField (body, screen) {
         item.textBytes = item.textBytes.slice(0, baseLength);
         if (!pushPadsText) continue;
 
-        // HOD pads push-button labels with a blank on both sides. When
+        // Push-button labels are padded with a blank on both sides. When
         // the choice already occupies textSize cells those blanks replace
         // the edge cells; otherwise they extend the short one-row label.
         const paddedLength = textSize > baseLength ? baseLength + 2 : baseLength;
@@ -273,17 +278,14 @@ export function decodeSelectionField (body, screen) {
         isPB    ? ConstructKind.PUSH_BUTTONS :
         ConstructKind.SELECTION_FIELD);
 
-    const sfRow = (screen.cursor / screen.cols | 0);     // 0-based
-    const sfCol = (screen.cursor % screen.cols);
+    const startAddress = screen.writeAddress;
+    const sfRow = (startAddress / screen.cols | 0);     // 0-based
+    const sfCol = (startAddress % screen.cols);
 
-    // Paint the items + indicator chars into the actual screen cells.
-    // Real 5250 hardware does this on the client side; we mimic so the
-    // existing cell renderer paints text correctly and the ENPTUI
-    // overlay only has to swap the raw indicator byte for a fancier
-    // marker. The indicator is a SINGLE cell (just the radio bullet /
-    // check glyph) followed by one space and then the label text — no
-    // brackets or parentheses around it. Item widths can vary on a
-    // one-row construct, so positions are accumulated rather than derived
+    // Compute the presentation-space positions without mutating cells.
+    // The dispatcher paints only after it has removed and cleared any
+    // construct being replaced. Item widths can vary on a one-row
+    // construct, so positions are accumulated instead of being derived
     // from a fixed column multiplier.
     const itemSlotWidth = textSize + numOfNulls + (drawIndicator ? 4 : 2);
     const itemPositions = [];
@@ -295,7 +297,7 @@ export function decodeSelectionField (body, screen) {
     // by menu bars and irregular selection groups.
     let curRow = 0;
     let curCol = 0;
-    let anchor = screen.cursor;
+    let anchor = startAddress;
     let rowSpan = 0;
     let firstRowSpan = 0;
     for (let i = 0; i < items.length; i++) {
@@ -306,7 +308,7 @@ export function decodeSelectionField (body, screen) {
             curCol = 0;
             if (firstRowSpan === 0) firstRowSpan = rowSpan;
             rowSpan = 0;
-            anchor = screen.cursor + curRow * screen.cols;
+            anchor = startAddress + curRow * screen.cols;
         }
         const itemAnchor = anchor;
         const indicatorIdx = drawIndicator ? itemAnchor - 1 : -1;
@@ -315,7 +317,6 @@ export function decodeSelectionField (body, screen) {
         const c = drawIndicator ? indicatorIdx % screen.cols : textIdx % screen.cols;
         const displayLength = items[i].textBytes.length;
         const step = displayLength + numOfNulls + (drawIndicator ? 4 : (pushAttrOverlap ? 1 : 2));
-        const hitWidth = displayLength + (drawIndicator ? 3 : 0);
         const tailIdx = textIdx + displayLength + (pushAttrOverlap ? 0 : numOfNulls);
 
         if (itemAnchor < 0 || textIdx < 0 || tailIdx >= screen.size
@@ -334,40 +335,8 @@ export function decodeSelectionField (body, screen) {
             textRow: ((textIdx / screen.cols) | 0) + 1,
             textCol: (textIdx % screen.cols) + 1,
             slotWidth: step,
-            hitWidth,
             textLength: displayLength,
         });
-
-        const itemAttr = choiceAttrs[items[i].unavailable ? AttrIndex.UNAVAILABLE
-            : items[i].selected ? AttrIndex.SELECTED : AttrIndex.AVAILABLE];
-        if (!items[i].dummy) {
-            writeAttribute(screen, itemAnchor, itemAttr);
-            writeAttribute(screen, textIdx + displayLength, 0x20);
-        }
-        if (!items[i].dummy && !pushAttrOverlap) {
-            for (let n = 1; n <= numOfNulls; n++) {
-                const nullCell = screen.cells[textIdx + displayLength + n];
-                nullCell.byte = 0;
-                nullCell.glyph = ' ';
-                nullCell.attributePlace = false;
-                nullCell.startField = false;
-            }
-        }
-        if (!items[i].dummy && drawIndicator && !items[i].unavailable) {
-            writeAttribute(screen, indicatorIdx - 1, choiceAttrs[AttrIndex.IND_AVAILABLE]);
-            writeIndicator(screen, indicatorIdx, items[i], single, isPB,
-                choiceAttrs[AttrIndex.IND_AVAILABLE]);
-        }
-        if (!items[i].dummy) {
-            const textCol = textIdx % screen.cols;
-            for (let k = 0; k < items[i].textBytes.length && (textCol + k) < screen.cols; k++) {
-                const cell = screen.cells[textIdx + k];
-                cell.byte = items[i].textBytes[k];
-                cell.glyph = screen.ebcdic.toChar(items[i].textBytes[k]);
-                cell.attributePlace = false;
-                cell.attr = ATTR_BASE[itemAttr] ?? screen.activeAttr;
-            }
-        }
 
         rowSpan += step;
         curCol++;
@@ -379,14 +348,30 @@ export function decodeSelectionField (body, screen) {
             curCol = 0;
             curRow++;
             rowSpan = 0;
-            anchor = screen.cursor + curRow * screen.cols;
+            anchor = startAddress + curRow * screen.cols;
         } else {
             anchor = itemAnchor + step;
         }
     }
 
+    // A choice owns more than its visible label. Its interactive range
+    // starts at the leading attribute (two cells before the anchor when
+    // an indicator is present) and ends after the trailing attribute and
+    // any inter-choice null padding. This keeps clicks on radio markers,
+    // button frames and column spacing inside the pseudo-field.
+    for (let i = 0; i < itemPositions.length; i++) {
+        const position = itemPositions[i];
+        const hasLaterCursorableInRow = itemPositions.some((candidate, candidateIndex) =>
+            candidateIndex > i && candidate?.row === position.row
+            && !items[candidateIndex]?.nonCursorable);
+        const hitStartIdx = position.anchorIdx - (drawIndicator ? 2 : 0);
+        position.hitCol = (hitStartIdx % screen.cols) + 1;
+        position.hitWidth = position.textLength + 2 + (drawIndicator ? 2 : 0)
+            + (hasLaterCursorableInRow ? numOfNulls : 0);
+    }
+
     const layoutSpan = firstRowSpan || rowSpan;
-    const boundsStart = screen.cursor - (drawIndicator ? 2 : 0);
+    const boundsStart = startAddress - (drawIndicator ? 2 : 0);
     let boundsWidth = Math.max(1, layoutSpan - numOfNulls);
     if (isPB && pushAttrOverlap) boundsWidth++;
     if (scrollAttached) boundsWidth += 2;
@@ -403,7 +388,7 @@ export function decodeSelectionField (body, screen) {
         kind: subTypeName,
         subType: selectionType,
         flag1, flag2, flag3,
-        cursorAtStart: screen.cursor,
+        cursorAtStart: startAddress,
         row: sfRow + 1, col: sfCol + 1,
         single,
         multi,
@@ -449,6 +434,107 @@ export function decodeSelectionField (body, screen) {
     return result;
 }
 
+/** Whether a construct owns presentation-space cells rather than being
+ *  rendered exclusively as an overlay. */
+export function isMaterializedSelection (construct) {
+    return Boolean(construct && [ConstructKind.SELECTION_FIELD,
+        ConstructKind.MENU_BAR, ConstructKind.PUSH_BUTTONS].includes(construct.kind));
+}
+
+/** Clear every presentation-space cell owned by removed selection
+ *  constructs. Bounds are clipped defensively because the display can
+ *  change geometry between records. Field references are preserved:
+ *  they belong to the format table, not to the visual construct. */
+export function clearSelectionConstructs (screen, constructs) {
+    for (const construct of constructs ?? []) {
+        if (!isMaterializedSelection(construct)) continue;
+        const top = (construct.boundsTopRow ?? 1) - 1;
+        const left = (construct.boundsLeftCol ?? 1) - 1;
+        const height = Math.max(0, construct.boundsHeight ?? 0);
+        const width = Math.max(0, construct.boundsWidth ?? 0);
+        for (let row = Math.max(0, top); row < Math.min(screen.rows, top + height); row++) {
+            for (let col = Math.max(0, left); col < Math.min(screen.cols, left + width); col++) {
+                const cell = screen.cells[row * screen.cols + col];
+                cell.byte = 0;
+                cell.glyph = ' ';
+                cell.attributePlace = false;
+                cell.startField = false;
+                cell.extAttr = null;
+            }
+        }
+    }
+}
+
+/** Materialise one selection construct in the presentation space. */
+export function paintSelectionField (screen, construct) {
+    if (!isMaterializedSelection(construct)) return;
+    const { items = [], itemPositions = [], choiceAttrs = [] } = construct;
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const position = itemPositions[i];
+        if (!position || item.dummy) continue;
+        // A push button expresses selected/default state through its frame.
+        // Its label keeps the available palette until it becomes unavailable.
+        const itemAttr = choiceAttrs[item.unavailable ? AttrIndex.UNAVAILABLE
+            : item.selected && !construct.isPushButton
+                ? AttrIndex.SELECTED : AttrIndex.AVAILABLE] ?? 0x20;
+
+        writeAttribute(screen, position.anchorIdx, itemAttr);
+        const tail = screen.cells[position.textIdx + position.textLength];
+        // Choice text must not replace an attribute/field boundary already
+        // owned by the presentation space (for example a window border or
+        // the following ordinary field).
+        if (tail && !tail.attributePlace && !tail.startField)
+            writeAttribute(screen, position.textIdx + position.textLength, 0x20);
+
+        // Selection fields and push buttons add inter-column nulls only
+        // between cursorable choices in the same row. Menu-bar rows retain
+        // their explicit padding after each choice.
+        const hasLaterChoiceInRow = itemPositions.some((candidate, candidateIndex) =>
+            candidateIndex > i && candidate?.row === position.row
+            && !items[candidateIndex]?.dummy
+            && !items[candidateIndex]?.nonCursorable);
+        if (!construct.pushAttrOverlap && (construct.isMenu || hasLaterChoiceInRow)) {
+            for (let n = 1; n <= construct.numOfNulls; n++) {
+                const cell = screen.cells[position.textIdx + position.textLength + n];
+                if (!cell) break;
+                cell.byte = 0;
+                cell.glyph = ' ';
+                cell.attributePlace = false;
+                cell.startField = false;
+                cell.extAttr = null;
+            }
+        }
+        if (construct.drawIndicator && !item.unavailable) {
+            const indicatorAttr = choiceAttrs[AttrIndex.IND_AVAILABLE] ?? 0x20;
+            writeAttribute(screen, position.indicatorIdx - 1, indicatorAttr);
+            writeIndicator(screen, position.indicatorIdx, item, construct.single,
+                construct.isPushButton, indicatorAttr);
+        }
+
+        const textCol = position.textIdx % screen.cols;
+        for (let k = 0; k < item.textBytes.length && textCol + k < screen.cols; k++) {
+            const cell = screen.cells[position.textIdx + k];
+            if (!cell) break;
+            cell.byte = item.textBytes[k];
+            cell.glyph = screen.ebcdic.toChar(item.textBytes[k]);
+            cell.attributePlace = false;
+            cell.startField = false;
+            cell.attr = ATTR_BASE[itemAttr] ?? screen.activeAttr;
+            cell.extAttr = null;
+        }
+    }
+}
+
+/** Clear removed footprints, restore the ordinary attribute plane, then
+ *  redraw every active materialised construct in insertion order. */
+export function refreshSelectionPresentation (screen, removed = []) {
+    clearSelectionConstructs(screen, removed);
+    screen.recalcAttributes();
+    for (const construct of screen.enptui.all)
+        paintSelectionField(screen, construct);
+}
+
 function parseMenuSeparator (entry) {
     if (entry.length < 5 || entry.length > 8) return null;
     const flags = entry[2];
@@ -458,13 +544,17 @@ function parseMenuSeparator (entry) {
     let attr = 0x3A;
     let char = 0x4B;
     if (entry.length >= 7 && entry[6] !== 0) attr = entry[6];
-    if (entry.length >= 8 && (flags & 0x80) !== 0 && entry[7] !== 0) char = entry[7];
+    const customCharacter = entry.length >= 8
+        && (flags & 0x80) !== 0
+        && entry[7] !== 0;
+    if (customCharacter) char = entry[7];
     return {
         flags,
         startCol,
         endCol,
         attr,
         char,
+        customCharacter,
         suppressAttribute: (flags & 0x40) !== 0,
     };
 }
@@ -519,21 +609,15 @@ function parseChoiceText (entry, textSize) {
     //   flag1 0x04 → aidCode byte (push-button AID, F3=Cancel, etc.)
     //   flag1 0x01 → 1 extra byte (numeric single-select index)
     //   flag1 0x02 → 2 extra bytes (numeric double-select index)
-    // followed by an UNCONDITIONAL one-byte advance the ENPTUI
-    // reference performs at the bottom of the optionals block —
-    // missing this used to shift the text payload one byte left for
-    // any entry that advertised a mnemonic or AID, dropping the first
-    // character of the label.
     if ((flag3 & 0x80) !== 0) {
-        // Each optional byte both reads AND advances. There is NO extra
-        // unconditional advance after the conditional reads - our `p`
-        // starts at entry[5] (already past flag3) which corresponds to
-        // the position AFTER the ENPTUI reference's unconditional advance.
-        // Adding another advance here drops the first byte of the
-        // label text and produces "pples" instead of "Apples".
+        const optionalLength = ((flag1 & 0x08) !== 0 ? 1 : 0)
+            + ((flag1 & 0x04) !== 0 ? 1 : 0)
+            + ((flag1 & 0x01) !== 0 ? 1 : (flag1 & 0x02) !== 0 ? 2 : 0);
+        if (p + optionalLength > entry.length)
+            fail('truncated Choice Text optional data', SenseCode.INVALID_MINOR_LENGTH);
         if ((flag1 & 0x08) !== 0) mnemonicOffset = entry[p++];
-        if ((flag1 & 0x04) !== 0) aidCode        = entry[p++];
-        if      ((flag1 & 0x01) !== 0) p += 1;
+        if ((flag1 & 0x04) !== 0) aidCode = entry[p++];
+        if ((flag1 & 0x01) !== 0) p += 1;
         else if ((flag1 & 0x02) !== 0) p += 2;
     }
 
@@ -542,12 +626,10 @@ function parseChoiceText (entry, textSize) {
     const unavailable = (choiceState & 0x80) !== 0;     // 0x80 or 0xC0
 
     // flag2 carries layout / cursor hints. The most important is
-    // NewRow (0x20) which forces this item to start a fresh row in
-    // multi-row layouts — menu bars and irregular selection groups
-    // rely on it. Other bits (TopChoice / LeftChoice / NoPushBox)
-    // are positional hints we record but don't render yet.
+    // NewRow (0x20) forces this item to start a fresh row in menu
+    // layouts. The directional bits request Roll AIDs at an edge, and
+    // NoPushBox is consumed by the push-button renderer.
     const newRow         = (flag1 & 0x20) !== 0;
-    const nonCursorable  = (flag2 & 0x80) !== 0;
     const topChoice      = (flag2 & 0x40) !== 0;
     const bottomChoice   = (flag2 & 0x20) !== 0;
     const leftChoice     = (flag2 & 0x10) !== 0;
@@ -558,6 +640,9 @@ function parseChoiceText (entry, textSize) {
     const textBytes = new Uint8Array(textSize);
     textBytes.fill(0x40);
     const avail = Math.max(0, Math.min(textSize, entry.length - p));
+    // A Choice Text minor without text is structural padding.  The host
+    // does not have to repeat the Non-Cursorable bit for that form.
+    const nonCursorable = (flag2 & 0x80) !== 0 || avail === 0;
     for (let i = 0; i < avail; i++) textBytes[i] = entry[p + i];
 
     return {

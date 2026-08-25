@@ -16,7 +16,7 @@
 //
 // The CreateWindow header carries only the rectangle; title, footer
 // and border characters arrive as minor structures so the host can
-// send each independently. Window position comes from the cursor at
+// send each independently. Window position comes from the write address at
 // the time of the CreateWindow segment (i.e. the most recent SBA).
 
 import { ConstructKind, SenseCode } from '../Constants.js';
@@ -45,10 +45,10 @@ export function decodeWindow (body, screen) {
     const height  = body[3];
     const width   = body[4];
 
-    // Window top-left comes from the cursor's row/col at decode time
+    // Window top-left comes from the current SBA at decode time
     // (the host emits an SBA immediately before the CreateWindow).
-    const sfRow = (screen.cursor / screen.cols | 0);
-    const sfCol = (screen.cursor % screen.cols);
+    const sfRow = (screen.writeAddress / screen.cols | 0);
+    const sfCol = (screen.writeAddress % screen.cols);
 
     // Per the ENPTUI window construct:
     //   flag1 bit 0x80 = cursor restricted to the window interior
@@ -57,7 +57,7 @@ export function decodeWindow (body, screen) {
     const cursorRestricted = (flag1 & 0x80) !== 0;
     const menuPullDown     = (flag1 & 0x40) !== 0;
 
-    // IBM HOD treats the wire width/depth as the content rectangle. The
+    // The wire width/depth describes the content rectangle. The
     // complete construct also owns three cells on either side and one
     // border row above/below it.
     const outerWidth  = width + 6;
@@ -68,7 +68,7 @@ export function decodeWindow (body, screen) {
     // Walk minor structures for border / title / footer.
     const result = {
         kind: ConstructKind.WINDOW,
-        cursorAtStart: screen.cursor,
+        cursorAtStart: screen.writeAddress,
         topRow:  sfRow + 1,                  // store 1-based to match SBA convention
         leftCol: sfCol + 1,
         height: outerHeight,
@@ -87,6 +87,7 @@ export function decodeWindow (body, screen) {
         borderAttr:  0x3A,
         noBorder:    false,
         borders:     DEFAULT_BORDERS.slice(),
+        borderOverrides: new Array(8).fill(false),
         title:       null,                   // {text, attr, align} | null
         footer:      null,
     };
@@ -114,7 +115,7 @@ export function decodeWindow (body, screen) {
     return result;
 }
 
-/** Border Presentation minor (0x01). Layout verified against IBM HOD:
+/** Border Presentation minor (0x01) wire layout:
  *    entry[0] minorLen
  *    entry[1] minorType (0x01)
  *    entry[2] flag (high bit 0x80 ⇒ entry carries 8 glyph overrides)
@@ -129,7 +130,10 @@ function applyBorder (entry, result) {
         result.noBorder = NON_DISPLAY_ATTRS.has(entry[4]);
     }
     for (let i = 0; i < 8 && 5 + i < entry.length; i++) {
-        if (entry[5 + i] !== 0) result.borders[i] = entry[5 + i];
+        if (entry[5 + i] !== 0) {
+            result.borders[i] = entry[5 + i];
+            result.borderOverrides[i] = true;
+        }
     }
 }
 

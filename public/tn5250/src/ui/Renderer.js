@@ -101,8 +101,9 @@ export class Renderer {
         // every cell of that field is rendered with that attribute byte
         // instead of its own. Mirrors real 5250 hardware which swaps the
         // colour of the entire field the moment the user enters it.
-        const cursorField = s.fieldAt(s.cursor);
-        const highlightDesc = (cursorField && cursorField.highlightAttr)
+        const cursorField = s.logicalField(s.fieldAt(s.cursor));
+        const cursorFieldSegments = new Set(s.fieldChain(cursorField));
+        const highlightDesc = (cursorField?.highlightAttr)
             ? (ATTR_BASE[cursorField.highlightAttr] ?? null)
             : null;
 
@@ -116,7 +117,7 @@ export class Renderer {
                 const y = r * this.cellHeight;
 
                 // Apply highlight-on-entry over the field's cells.
-                const useDesc = (highlightDesc && cell.field === cursorField)
+                const useDesc = (highlightDesc && cursorFieldSegments.has(cell.field))
                     ? highlightDesc : cell.attr;
                 const fg = useDesc.hidden ? (useDesc.bg ? COLOR[useDesc.bg] : '#000')
                                           : (COLOR[useDesc.fg] ?? COLOR.green);
@@ -148,17 +149,6 @@ export class Renderer {
                     ctx.fillRect(x, y + this.cellHeight - 1, this.cellWidth, 1);
                 }
 
-                // Extended attribute (Write Extended Attribute) — only
-                // a handful of pens are commonly used: type 0x02 carries
-                // additional highlight bits (0x04 underline, 0x08 blink,
-                // 0x40 reverse) that stack with the basic attribute.
-                if (cell.extAttr && cell.extAttr.type === 0x02) {
-                    const v = cell.extAttr.value;
-                    if ((v & 0x04) && !useDesc.underline) {
-                        ctx.fillStyle = drawFg;
-                        ctx.fillRect(x, y + this.cellHeight - 1, this.cellWidth, 1);
-                    }
-                }
                 // Column separators existed on real IBM 5250 hardware
                 // but modern emulators skip them by
                 // default - they clutter the screen on every cell of a
@@ -192,7 +182,11 @@ export class Renderer {
         // white otherwise. Same convention tn3270 uses; avoids the
         // 'difference' composite mode which can flicker during fast
         // transitions like sign-off.
-        if (this.cursorBlink) {
+        // An active ENPTUI choice supplies its own cursor palette across
+        // the choice text.  Drawing the ordinary terminal cursor as well
+        // produces a second, spurious underline inside the control.
+        const enptuiCursor = s.enptuiItemAtCursor();
+        if (this.cursorBlink && !cursorField?.cursorInvisible && !enptuiCursor) {
             const cx = (s.cursor % s.cols) * this.cellWidth;
             const cy = (s.cursor / s.cols | 0) * this.cellHeight;
             ctx.fillStyle = s.keyboardLocked

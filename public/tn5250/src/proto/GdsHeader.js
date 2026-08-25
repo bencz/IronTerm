@@ -51,8 +51,9 @@ export function unwrap (bytes) {
     if (declaredLength !== bytes.length || declaredLength < Gds.HEADER_LEN)
         return null;
 
-    // Trust the variable-header length so a future host extension that
-    // bumps it past 4 still parses correctly.
+    // Display records normally use four bytes. Enhanced startup records
+    // may append diagnostic bytes after the fixed opcode at offset 9;
+    // those bytes remain part of the variable header and are skipped.
     const varHdr = bytes[6] | 0;
     if (varHdr < Gds.VARHDR_LEN) return null;
     const dataStart = 6 + varHdr;

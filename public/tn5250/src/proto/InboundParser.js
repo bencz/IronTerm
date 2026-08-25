@@ -48,7 +48,7 @@
 // doesn't use TN3270E-style positive responses, so the caller can
 // ignore the success path.
 
-import { Cmd, Order, isAttribute } from './Constants.js';
+import { Cmd, Order, NegResp, isAttribute } from './Constants.js';
 import { decodeWdsf } from './enptui/WdsfDecoder.js';
 import { debugFor } from '../../../shared/src/core/debug.js';
 
@@ -66,12 +66,14 @@ export class InboundParser {
         this.readImmediateRequested = false;
         this.readScreenRequested = false;
         this.queryRequested = false;
-        this.queryStationStateRequested = false;
+        this.queryStationStateRequested = null;
         this.saveScreenRequested = null;
 
         // Inbound record pointer (parser-local, reset per record).
         this.buf = null;
         this.pos = 0;
+        this.suspendedErrorRead = null;
+        this.errorCode = Uint8Array.of(0, 0);
 
         // Diagnostic: set of every attribute byte the host has ever
         // emitted. Useful when calibrating ATTR_BASE against a real
@@ -92,6 +94,8 @@ export class InboundParser {
         this.pos = 0;
         this.pendingCc2 = 0;
         this.hasPendingCc2 = false;
+        this.keyboardStateChanged = false;
+        this.createdEnptuiThisRecord = false;
 
         try {
             this.#dispatchCommands();
@@ -118,15 +122,9 @@ export class InboundParser {
                 throw this.#error(`truncated command after ESC at offset ${this.pos - 1}`);
             const cmd = this.#u8();
             switch (cmd) {
-                case 0x07: {                          // audible bell + 2 reserved bytes
-                    this.screen.alarm = true;
-                    if (this.pos < this.buf.length) this.#u8();
-                    if (this.pos < this.buf.length) this.#u8();
-                    break;
-                }
                 case Cmd.WRITE_TO_DISPLAY:           this.#wtd(true);  break;
-                case Cmd.WRITE_ERROR_CODE:           this.#wtd(false); break;
-                case Cmd.WRITE_ERROR_CODE_TO_WINDOW: this.#wtd(false); break;
+                case Cmd.WRITE_ERROR_CODE:           this.#writeErrorCode(false); break;
+                case Cmd.WRITE_ERROR_CODE_TO_WINDOW: this.#writeErrorCode(true); break;
                 case Cmd.CLEAR_UNIT:                 this.#clearUnit(false); break;
                 case Cmd.CLEAR_UNIT_ALT: {
                     // Clear Unit Alternate is followed by a 1-byte param
@@ -135,7 +133,8 @@ export class InboundParser {
                     // an error condition (we surface as a warning).
                     const param = this.#u8();
                     if (param !== 0x00) {
-                        throw this.#error(`CUA with invalid parameter 0x${param.toString(16)}`);
+                        throw this.#error(`CUA with invalid parameter 0x${param.toString(16)}`,
+                            NegResp.CLEAR_UNIT_ALT_INVALID);
                     }
                     this.#clearUnit(true);
                     break;
@@ -169,20 +168,28 @@ export class InboundParser {
                     break;
                 case Cmd.WRITE_STRUCTURED_FIELD:
                     this.#wsf();
-                    return;        // WSF always ends the record
+                    // WSF has its own length, so another ESC-introduced
+                    // command may legally follow it in the same record.
+                    this.readPending = false;
+                    this.invited = false;
+                    break;
+                case Cmd.TRUE_TRANSPARENCY_WRITE:
+                    this.#trueTransparencyWrite();
+                    break;
                 case Cmd.SAVE_SCREEN:
                     this.saveScreenRequested = {
                         partial: false,
-                        token: this.screen.saveScreen(),
+                        token: this.saveScreen(),
                     };
                     break;
                 case Cmd.SAVE_PARTIAL_SCREEN:
+                    this.#flushPendingCc2();
                     this.#savePartialScreen();
                     break;
                 case Cmd.RESTORE_SCREEN: {
                     const token = this.buf.slice(this.pos);
                     this.pos = this.buf.length;
-                    if (!this.#restoreScreen(token))
+                    if (!this.restoreScreen(token))
                         throw this.#stateError('unknown Save Screen token');
                     return;
                 }
@@ -190,10 +197,11 @@ export class InboundParser {
                     const length = this.#u16();
                     if (length === 0) break;
                     if (this.pos + length > this.buf.length)
-                        throw this.#error(`truncated Restore Partial Screen image at offset ${this.pos}`);
+                        throw this.#error(`truncated Restore Partial Screen image at offset ${this.pos}`,
+                            NegResp.TOO_LITTLE_DATA);
                     const token = this.buf.slice(this.pos, this.pos + length);
                     this.pos += length;
-                    if (!this.#restoreScreen(token))
+                    if (!this.restoreScreen(token))
                         throw this.#stateError('unknown Save Partial Screen token');
                     break;
                 }
@@ -206,9 +214,10 @@ export class InboundParser {
 
     // ---- byte cursor ---------------------------------------------------
 
-    #error (message) {
+    #error (message, senseCode = NegResp.COMMAND_NOT_VALID) {
         const error = new Error(message);
         error.negativeResponse = true;
+        error.senseCode = senseCode;
         return error;
     }
 
@@ -222,18 +231,20 @@ export class InboundParser {
         this.readImmediateRequested = false;
         this.readScreenRequested = false;
         this.queryRequested = false;
-        this.queryStationStateRequested = false;
+        this.queryStationStateRequested = null;
         this.saveScreenRequested = null;
     }
 
     #u8 ()  {
         if (this.pos >= this.buf.length)
-            throw this.#error(`truncated 5250 data at offset ${this.pos}`);
+            throw this.#error(`truncated 5250 data at offset ${this.pos}`,
+                NegResp.TOO_LITTLE_DATA);
         return this.buf[this.pos++] & 0xFF;
     }
     #peek () {
         if (this.pos >= this.buf.length)
-            throw this.#error(`truncated 5250 data at offset ${this.pos}`);
+            throw this.#error(`truncated 5250 data at offset ${this.pos}`,
+                NegResp.TOO_LITTLE_DATA);
         return this.buf[this.pos] & 0xFF;
     }
     #u16 () {
@@ -244,8 +255,8 @@ export class InboundParser {
 
     // ---- WTD -----------------------------------------------------------
 
-    #wtd (hasControls) {
-        this.screen.beginWriteToDisplay();
+    #wtd (hasControls, { errorWrite = false } = {}) {
+        this.screen.beginWriteToDisplay({ retainWriteAddress: errorWrite });
         let cc1 = null;
         if (hasControls) {
             const cc0 = this.#u8();
@@ -274,9 +285,11 @@ export class InboundParser {
                     // each byte is treated like a plain data byte.
                     const len = this.#u16();
                     if (this.pos + len > this.buf.length)
-                        throw this.#error(`TD length ${len} exceeds remaining data`);
+                        throw this.#error(`TD length ${len} exceeds remaining data`,
+                            NegResp.INVALID_TRANSPARENT_DATA);
                     if (this.screen.writeAddress + len > this.screen.size)
-                        throw this.#error(`TD length ${len} overwrites end of display`);
+                        throw this.#error(`TD length ${len} overwrites end of display`,
+                            NegResp.INVALID_TRANSPARENT_DATA);
                     for (let i = 0; i < len; i++) {
                         this.screen.placeByte(this.#u8());
                     }
@@ -284,29 +297,45 @@ export class InboundParser {
                 }
                 case Order.SBA:   this.#orderSba();   break;
                 case Order.WEA: {
-                    // Write Extended Attribute - 2-byte (type, value)
-                    // pair that overrides the running "pen" for the
-                    // cells emitted after it, until the next basic
-                    // attribute (0x20-0x3F) reset. Most hosts only use
-                    // the basic attribute table; WEA appears when the
-                    // host wants colours / underlines outside that
-                    // table. We record it on the screen so future
-                    // placeByte() calls inherit the extension.
+                    // In a display SBCS session the only defined WEA
+                    // type is the NLS/DBCS plane selector (0x05). Since
+                    // this client deliberately does not advertise a DBCS
+                    // session, every WEA is a request error. Consuming and
+                    // painting invented colour/highlight types would hide
+                    // a protocol mismatch and corrupt subsequent output.
                     const type = this.#u8();
                     const value = this.#u8();
-                    this.screen.setExtendedAttr(type, value);
+                    throw this.#error(
+                        `WEA type 0x${type.toString(16)} value 0x${value.toString(16)} is unavailable in an SBCS session`,
+                        NegResp.INVALID_EXT_ATTRIBUTE);
                     break;
                 }
                 case Order.IC: {
                     const row = this.#u8();
                     const col = this.#u8();
-                    this.screen.setPendingInsert(true, row, col);
+                    if (errorWrite) {
+                        if (row < 1 || row > this.screen.rows
+                            || col < 1 || col > this.screen.cols)
+                            throw this.#error(`invalid error cursor position ${row},${col}`,
+                                NegResp.INVALID_ADDRESS);
+                        this.screen.cursor = (row - 1) * this.screen.cols + col - 1;
+                    } else {
+                        try {
+                            this.screen.setPendingInsert(true, row, col);
+                        } catch (error) {
+                            throw this.#error(error.message, NegResp.INVALID_ADDRESS);
+                        }
+                    }
                     break;
                 }
                 case Order.MC: {
                     const row = this.#u8();
                     const col = this.#u8();
-                    this.screen.setPendingInsert(false, row, col);
+                    try {
+                        this.screen.setPendingInsert(false, row, col);
+                    } catch (error) {
+                        throw this.#error(error.message, NegResp.INVALID_ADDRESS);
+                    }
                     break;
                 }
                 case Order.WTDSF: {
@@ -318,10 +347,12 @@ export class InboundParser {
                     const segLen = this.#u16();
                     const start  = this.pos - 2;
                     if (segLen < 4 || start + segLen > this.buf.length)
-                        throw this.#error(`invalid WTDSF segment length ${segLen}`);
+                        throw this.#error(`invalid WTDSF segment length ${segLen}`,
+                            NegResp.STRUCTURED_FIELD_LENGTH);
                     const end    = start + segLen;
                     const body   = this.buf.subarray(start, end);
                     decodeWdsf(body, this.screen);
+                    this.createdEnptuiThisRecord = true;
                     this.pos = end;
                     break;
                 }
@@ -337,6 +368,88 @@ export class InboundParser {
             }
         }
         if (cc1 !== null) this.#preprocessCc2(cc1);
+    }
+
+    #writeErrorCode (toWindow) {
+        const row = this.screen.soh.errRow >= 1 && this.screen.soh.errRow <= this.screen.rows
+            ? this.screen.soh.errRow
+            : this.screen.rows;
+        const rowStart = (row - 1) * this.screen.cols;
+        let start = rowStart;
+        let end = rowStart + this.screen.cols - 1;
+        if (toWindow) {
+            const startCol = this.#u8();
+            const endCol = this.#u8();
+            if (startCol < 1 || endCol < startCol || endCol > this.screen.cols)
+                throw this.#error(`invalid WECW columns ${startCol}-${endCol}`,
+                    NegResp.INVALID_ADDRESS);
+            start = rowStart + startCol - 1;
+            end = rowStart + endCol - 1;
+        }
+
+        const originalBuffer = this.buf;
+        const bodyStart = this.pos;
+        let terminator = originalBuffer.indexOf(Order.ESC, bodyStart);
+        if (terminator < 0) terminator = originalBuffer.length;
+        let bodyEnd = terminator;
+        if (toWindow) {
+            bodyEnd = bodyStart + end - start + 1;
+            if (originalBuffer[bodyStart] === Order.IC) bodyEnd += 3;
+            if (bodyEnd > terminator)
+                throw this.#error('truncated WECW body', NegResp.TOO_LITTLE_DATA);
+        }
+
+        // Error Help returns the four-digit identifier that begins the
+        // error line, packed as two BCD bytes. IC and a leading display
+        // attribute are orders rather than identifier digits.
+        let errorPos = bodyStart;
+        if (originalBuffer[errorPos] === Order.IC) errorPos += 3;
+        if (isAttribute(originalBuffer[errorPos])) errorPos++;
+        if (errorPos + 3 < bodyEnd && originalBuffer[errorPos] !== Order.ESC) {
+            this.errorCode = Uint8Array.of(
+                ((originalBuffer[errorPos] & 0x0F) << 4)
+                    | (originalBuffer[errorPos + 1] & 0x0F),
+                ((originalBuffer[errorPos + 2] & 0x0F) << 4)
+                    | (originalBuffer[errorPos + 3] & 0x0F),
+            );
+        }
+
+        if (!this.suspendedErrorRead) {
+            this.suspendedErrorRead = {
+                readPending: this.readPending,
+                invited: this.invited,
+                readType: this.readType,
+            };
+        }
+        this.readPending = false;
+        this.invited = false;
+
+        const savedWriteAddress = this.screen.writeAddress;
+        this.screen.beginErrorLine(start, end);
+        try {
+            this.buf = originalBuffer.subarray(bodyStart, bodyEnd);
+            this.pos = 0;
+            this.#wtd(false, { errorWrite: true });
+        } finally {
+            this.buf = originalBuffer;
+            this.pos = terminator < originalBuffer.length - 1
+                ? terminator
+                : originalBuffer.length;
+            this.screen.writeAddress = savedWriteAddress;
+        }
+    }
+
+    clearErrorMode () {
+        this.screen.clearErrorMode();
+        const saved = this.suspendedErrorRead;
+        if (saved) {
+            if (saved.readPending && saved.readType === Cmd.READ_INPUT_FIELDS) {
+                this.readPending = true;
+                this.invited = saved.invited;
+                this.readType = saved.readType;
+            }
+            this.suspendedErrorRead = null;
+        }
     }
 
     /** Control-character bytes 0 and 1 of a WTD command (CC0/CC1).
@@ -362,6 +475,7 @@ export class InboundParser {
      *     0x01 = message light on */
     #processCc1 (cc0) {
         const cc0Top = cc0 & 0xE0;
+        this.keyboardStateChanged = cc0Top !== 0x00;
         if (cc0Top !== 0x00) this.screen.keyboardLocked = true;
         switch (cc0Top) {
             case 0x40:
@@ -389,19 +503,53 @@ export class InboundParser {
     }
 
     #preprocessCc2 (cc1) {
-        this.screen.applyWcc2Cursor(cc1);
+        let effectiveCc1 = cc1;
+        const unlockAlreadyPending = (this.pendingCc2 & 0x08) !== 0;
+        // An unlock on an already-unlocked workstation is not a new
+        // keyboard transition when CC0 requested no state change. In that
+        // case the cursor must remain where the operator left it and
+        // unlock-only side effects must not run again. The same rule applies
+        // to a later WTD after an earlier WTD queued the record's unlock.
+        if ((unlockAlreadyPending || !this.screen.keyboardLocked)
+            && !this.keyboardStateChanged) {
+            effectiveCc1 |= 0x40;
+            effectiveCc1 &= ~0x08;
+        }
+
+        const previousCursor = this.screen.cursor;
+        const previousSelection = this.screen.enptuiItemAtAddress(previousCursor)?.construct;
+        this.screen.applyWcc2Cursor(effectiveCc1);
+        const nextCursor = this.screen.pendingCursor;
+        const nextSelection = nextCursor >= 0
+            ? this.screen.enptuiItemAtAddress(nextCursor)?.construct
+            : null;
+        // A host cursor refresh within the same selection pseudo-field
+        // must not jump away from the operator's currently focused item.
+        if (previousSelection && previousSelection === nextSelection)
+            this.screen.pendingCursor = previousCursor;
         this.hasPendingCc2 = true;
-        this.pendingCc2 |= cc1 & 0x4F;
-        if ((cc1 & 0x40) === 0) this.pendingCc2 &= ~0x40;
-        if ((cc1 & 0x02) !== 0 && (cc1 & 0x01) === 0)
+        this.pendingCc2 |= effectiveCc1 & 0x4F;
+        if ((effectiveCc1 & 0x40) === 0) this.pendingCc2 &= ~0x40;
+        if ((effectiveCc1 & 0x02) !== 0 && (effectiveCc1 & 0x01) === 0)
             this.pendingCc2 = (this.pendingCc2 | 0x02) & ~0x01;
     }
 
     #processCc2 (cc1) {
-        if (cc1 & 0x08) this.screen.unlockKeyboard();
+        if ((cc1 & 0x08) && !this.screen.errorMode) {
+            this.screen.unlockKeyboard({
+                deselectChoices: !this.createdEnptuiThisRecord,
+            });
+        }
         if (cc1 & 0x04) this.screen.alarm = true;
         if (cc1 & 0x02) { this.screen.messageLight = false; }
         if (cc1 & 0x01) { this.screen.messageLight = true;  }
+    }
+
+    #flushPendingCc2 () {
+        if (!this.hasPendingCc2) return;
+        this.#processCc2(this.pendingCc2);
+        this.hasPendingCc2 = false;
+        this.pendingCc2 = 0;
     }
 
     #orderSoh () {
@@ -419,9 +567,10 @@ export class InboundParser {
         // without field data. They do not disable those keys.
         const len = this.#u8();
         if (len < 1 || len > 7)
-            throw this.#error(`invalid SOH length ${len}`);
+            throw this.#error(`invalid SOH length ${len}`, NegResp.INVALID_SOH);
         const end = this.pos + len;
-        if (end > this.buf.length) throw this.#error(`SOH length ${len} exceeds remaining data`);
+        if (end > this.buf.length) throw this.#error(
+            `SOH length ${len} exceeds remaining data`, NegResp.INVALID_SOH);
 
         const flag1 = (this.pos < end) ? this.#u8() : 0;
         // Per the IBM 5250 reference: SOH byte layout
@@ -440,9 +589,9 @@ export class InboundParser {
         ];
         this.pos = end;
 
-        // IBM clears the old field-format table at every valid SOH;
-        // the following SF orders build the new table for this panel.
-        this.screen.clearFormatTable();
+        // SOH starts a new field-format table while keeping an enclosing
+        // window active; the following SF orders rebuild the panel fields.
+        this.screen.clearFormatTable({ preserveWindows: true });
         this.screen.startOfHeader({
             cursorMoveToInput: (flag1 & 0x10) !== 0,
             resequence,
@@ -456,7 +605,16 @@ export class InboundParser {
         const row  = this.#u8();
         const col  = this.#u8();
         const byte = this.#u8();
-        this.screen.repeatToAddress(row, col, byte);
+        try {
+            this.screen.repeatToAddress(row, col, byte);
+        } catch (error) {
+            const sense = /precedes/.test(error?.message)
+                ? NegResp.ADDRESS_PRECEDES
+                : /address/.test(error?.message)
+                    ? NegResp.INVALID_ADDRESS
+                    : NegResp.WRITE_PAST_END;
+            throw this.#error(error.message, sense);
+        }
     }
 
     #orderEa () {
@@ -471,12 +629,27 @@ export class InboundParser {
         const col    = this.#u8();
         const length = this.#u8();
         if (length < 2 || length > 5 || this.pos + length - 1 > this.buf.length)
-            throw this.#error(`invalid EA attribute-plane length ${length}`);
+            throw this.#error(`invalid EA attribute-plane length ${length}`,
+                NegResp.INVALID_ERASE_ADDRESS);
         const planes = [];
         for (let i = 0; i < length - 1; i++) {
             planes.push(this.#u8());
         }
-        this.screen.eraseToAddress(row, col, planes);
+        // Plane 0 clears all SBCS presentation planes; 0xFF is the
+        // architected alias that also includes the NLS plane in a DBCS
+        // session. Plane 5 and every other selector require a DBCS/NLS
+        // presentation model and must not be silently ignored here.
+        if (planes.some(plane => plane !== 0x00 && plane !== 0xFF))
+            throw this.#error(`unsupported EA attribute plane 0x${planes.find(
+                plane => plane !== 0x00 && plane !== 0xFF).toString(16)}`,
+            NegResp.INVALID_ERASE_ADDRESS);
+        try {
+            this.screen.eraseToAddress(row, col, planes);
+        } catch (error) {
+            throw this.#error(error.message, /precedes/.test(error?.message)
+                ? NegResp.ADDRESS_PRECEDES
+                : NegResp.INVALID_ADDRESS);
+        }
     }
 
     #orderSba () {
@@ -487,10 +660,15 @@ export class InboundParser {
         // when the next order is SF and makes that field start at (1,1).
         if (row === 1 && col === 0) {
             if (this.#peek() !== Order.SF)
-                throw this.#error('SBA row=1 col=0 is only valid before SF');
+                throw this.#error('SBA row=1 col=0 is only valid before SF',
+                    NegResp.INVALID_ADDRESS);
             this.screen.setCursorBeforeStart();
         } else {
-            this.screen.setWriteAddress(row, col);
+            try {
+                this.screen.setWriteAddress(row, col);
+            } catch (error) {
+                throw this.#error(error.message, NegResp.INVALID_ADDRESS);
+            }
         }
     }
 
@@ -512,20 +690,32 @@ export class InboundParser {
             // FCW pairs of `0x81 <value>` are perfectly legal and must
             // be captured like any other tag.
             let next = this.#u8();
-            while (!isAttribute(next)) {
+            while (next >= 0x80) {
                 const v = this.#u8();
                 fcws.push([next, v]);
                 next = this.#u8();
             }
+            if (!isAttribute(next))
+                throw this.#error(
+                    `invalid Start Field attribute 0x${next.toString(16)}`,
+                    NegResp.INVALID_START_FIELD);
             attr = next;
         } else {
             // No FFW is present: the first byte is the display
             // attribute itself. It must not leak into field flags.
+            if (!isAttribute(first))
+                throw this.#error(
+                    `invalid Start Field attribute 0x${first.toString(16)}`,
+                    NegResp.INVALID_START_FIELD);
             attr = first;
         }
 
         const length = this.#u16();
-        this.screen.addField({ attr, length, ffw0, ffw1, fcws });
+        try {
+            this.screen.addField({ attr, length, ffw0, ffw1, fcws });
+        } catch (error) {
+            throw this.#error(error.message, NegResp.INVALID_START_FIELD);
+        }
     }
 
     // ---- read commands -------------------------------------------------
@@ -544,6 +734,8 @@ export class InboundParser {
         const rows = this.screen.rows;
         const cols = this.screen.cols;
         this.screen.clearUnit(alternate);
+        this.suspendedErrorRead = null;
+        this.errorCode = Uint8Array.of(0, 0);
         if (rows !== this.screen.rows || cols !== this.screen.cols)
             this.onGeometryChange(this.screen.rows, this.screen.cols);
     }
@@ -562,80 +754,127 @@ export class InboundParser {
             : null;
         this.saveScreenRequested = {
             partial: true,
-            token: this.screen.saveScreen(region),
+            token: this.saveScreen(region),
         };
     }
 
-    #restoreScreen (token = null) {
+    saveScreen (region = null) {
+        return this.screen.saveScreen(region, {
+            sessionState: {
+                readPending: this.readPending,
+                readType: this.readType,
+                invited: this.invited,
+                lastReadCc0: this.lastReadCc0 ?? 0,
+                lastReadCc1: this.lastReadCc1 ?? 0,
+            },
+        });
+    }
+
+    restoreScreen (token = null) {
         const rows = this.screen.rows;
         const cols = this.screen.cols;
         const restored = this.screen.restoreScreen(token);
+        const state = this.screen.lastRestoredSessionState;
+        if (restored && state) {
+            this.readPending = !!state.readPending;
+            this.readType = state.readType ?? this.readType;
+            this.invited = !!state.invited;
+            this.lastReadCc0 = state.lastReadCc0 ?? 0;
+            this.lastReadCc1 = state.lastReadCc1 ?? 0;
+        }
         if (restored && (rows !== this.screen.rows || cols !== this.screen.cols))
             this.onGeometryChange(this.screen.rows, this.screen.cols);
         return restored;
     }
 
+    // ---- true-transparency write --------------------------------------
+
+    #trueTransparencyWrite () {
+        // Length includes its own two bytes. The remaining bytes carry
+        // host metadata (often HTML/accessibility DDS annotations), not
+        // 5250 presentation-space characters. Consume the block so a
+        // following command remains aligned; the character-cell and
+        // ENPTUI renderers intentionally have nothing to paint for it.
+        const start = this.pos;
+        const length = this.#u16();
+        if (length < 2)
+            throw this.#error(`invalid True Transparency Write length ${length}`,
+                NegResp.INVALID_TRANSPARENT_DATA);
+        const end = start + length;
+        if (end > this.buf.length)
+            throw this.#error(`truncated True Transparency Write at offset ${start}`,
+                NegResp.INVALID_TRANSPARENT_DATA);
+        this.pos = end;
+    }
+
     // ---- write-structured-field (Query / ENPTUI) ----------------------
 
     #wsf () {
-        // Each WSF carries one or more structured-field segments back
-        // to back. We dispatch on (class, type) - per IBM 5250 ref:
+        // One WSF command carries one length-delimited structured field.
+        // The outer command dispatcher resumes at its end, which matters
+        // when another command follows in the same GDS record. Dispatch
+        // on (class, type):
         //
         //   0xD9 0x70 - Query 5250 capabilities ("who are you?")
-        //   0xD9 0x71 - Query Station State (cursor + screen geometry)
+        //   0xD9 0x72 - Query Station State
         //   0x00 0x88 - 5250 Erase/Reset
-        //   0xB0 0x00 - Set Reply Mode (which extended fields we accept)
-        //   0xD9 0x00 - Define Audit Window Table
-        //   0xD9 0x01 - Read Text Screen
         //
         // Unsupported structures are rejected so the host does not wait
         // indefinitely for a response we cannot represent correctly.
-        while (this.pos < this.buf.length) {
-            if (this.pos + 4 > this.buf.length)
-                throw this.#error(`truncated WSF segment at offset ${this.pos}`);
-            const len = this.#u16();
-            if (len < 4 || this.pos - 2 + len > this.buf.length)
-                throw this.#error(`invalid WSF segment length ${len}`);
-            const cls  = this.#u8();
-            const type = this.#u8();
-            const segEnd = this.pos - 4 + len;       // start was len bytes back
-            const payload = this.buf.subarray(this.pos, segEnd);
+        if (this.pos + 4 > this.buf.length)
+            throw this.#error(`truncated WSF segment at offset ${this.pos}`,
+                NegResp.STRUCTURED_FIELD_LENGTH);
+        const start = this.pos;
+        const len = this.#u16();
+        if (len < 4 || start + len > this.buf.length)
+            throw this.#error(`invalid WSF segment length ${len}`,
+                NegResp.STRUCTURED_FIELD_LENGTH);
+        const cls = this.#u8();
+        const type = this.#u8();
+        const segEnd = start + len;
+        const payload = this.buf.subarray(this.pos, segEnd);
 
-            if (cls === 0xD9 && type === 0x70) {
-                this.queryRequested = true;
-            } else if (cls === 0xD9 && type === 0x71) {
-                // Query Station State - host wants cursor row/col and
-                // a snapshot of screen control state. We mark it so the
-                // Terminal can emit the appropriate response.
-                this.queryStationStateRequested = true;
-            } else if (cls === 0xB0 && type === 0x00) {
-                // Set Reply Mode - host tells us which extended-field
-                // formats it expects in our outbound. We don't yet
-                // emit extended-field formats anyway, so storing the
-                // mode is enough to keep tests happy.
-                this.replyMode = payload[0] ?? 0;
-            } else if (cls === 0x00 && type === 0x88) {
-                // 5250 Erase/Reset - same effect as Clear Unit + Clear
-                // Format Table. Apply both and resume.
-                this.#clearUnit(false);
-                this.screen.clearFormatTable();
-            } else {
-                throw this.#error(`unsupported WSF class/type 0x${cls.toString(16)}/0x${type.toString(16)}`);
-            }
-            this.pos = segEnd;
+        if (cls === 0xD9 && type === 0x70) {
+            if (payload.length !== 1 || payload[0] !== 0)
+                throw this.#error('invalid Query request parameters',
+                    NegResp.STRUCTURED_FIELD_PARAM);
+            this.queryRequested = true;
+        } else if (cls === 0xD9 && type === 0x72) {
+            if (payload.length !== 2)
+                throw this.#error('invalid Query Station State length',
+                    NegResp.STRUCTURED_FIELD_LENGTH);
+            if ((payload[0] & 0x80) !== 0)
+                throw this.#error('invalid Query Station State flags',
+                    NegResp.STRUCTURED_FIELD_PARAM);
+            this.queryStationStateRequested = {
+                extended: (payload[0] & 0x40) !== 0 && payload[1] === 0,
+            };
+        } else if (cls === 0x00 && type === 0x88) {
+            // 5250 Erase/Reset - same effect as Clear Unit + Clear
+            // Format Table. Apply both and resume.
+            this.#clearUnit(false);
+            this.screen.clearFormatTable();
+        } else {
+            throw this.#error(
+                `unsupported WSF class/type 0x${cls.toString(16)}/0x${type.toString(16)}`,
+                NegResp.STRUCTURED_FIELD_TYPE);
         }
+        this.pos = segEnd;
     }
 
     // ---- ROLL ----------------------------------------------------------
 
     #roll () {
-        // ROLL <direction-byte> <top-line> <bottom-line> <lines-to-roll>
-        // direction-byte: 0x80 = up, 0x00 = down, lines in low 7 bits.
-        const dir  = this.#u8();
-        const top  = this.#u8();
-        const bot  = this.#u8();
-        const dist = dir & 0x7F;
-        const up   = (dir & 0x80) !== 0;
-        this.screen.roll(top, bot, dist, up);
+        // ROLL <direction+distance> <top-line> <bottom-line>.
+        // Bit 0x80 moves retained data down; the low five bits are the
+        // number of rows. Bits 0x20/0x40 are reserved.
+        const control = this.#u8();
+        const top = this.#u8();
+        const bottom = this.#u8();
+        const distance = control & 0x1F;
+        const down = (control & 0x80) !== 0;
+        if (!this.screen.roll(top, bottom, distance, down))
+            throw this.#error(`invalid ROLL region ${top}-${bottom} distance ${distance}`,
+                NegResp.INVALID_ROLL);
     }
 }

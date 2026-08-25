@@ -39,6 +39,15 @@ export class InputController {
     // ---- keyboard -----------------------------------------------------
 
     #bindKeyboard () {
+        document.addEventListener('paste', (event) => {
+            const tag = document.activeElement?.tagName;
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+            const text = event.clipboardData?.getData('text/plain');
+            if (typeof text !== 'string') return;
+            event.preventDefault();
+            this.selection.pasteText(text);
+        });
+
         document.addEventListener('keydown', async (event) => {
             const tag = document.activeElement?.tagName;
             if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA')
@@ -50,7 +59,10 @@ export class InputController {
                 event.preventDefault(); await this.selection.copy(); return;
             }
             if (mod && event.key.toLowerCase() === 'v') {
-                event.preventDefault(); await this.selection.paste(); return;
+                // Let the browser dispatch its trusted `paste` event. Reading
+                // navigator.clipboard here makes Firefox show a confirmation
+                // menu instead of pasting immediately.
+                return;
             }
             if (mod && event.key.toLowerCase() === 'a') {
                 event.preventDefault(); this.selection.selectAll(); return;
@@ -92,7 +104,7 @@ export class InputController {
     }
 
     #functionKeyName (event) {
-        if (event.key === 'Enter')    return 'Enter';
+        if (event.key === 'Enter' || event.code === 'NumpadEnter') return 'Enter';
         if (event.key === 'Escape')   return 'Clear';
         if (event.key === 'PageUp')   return 'PF7';
         if (event.key === 'PageDown') return 'PF8';

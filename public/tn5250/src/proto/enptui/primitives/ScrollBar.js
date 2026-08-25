@@ -16,8 +16,8 @@
 // Reference: ENPTUI scroll-bar construct definition.
 //
 // The decoder captures geometry for rendering; InputController maps bar
-// zones to the corresponding Roll AIDs. Direct thumb dragging is not an
-// advertised capability.
+// zones to the corresponding Roll AIDs and translates direct thumb dragging
+// back into the host's scroll increment.
 
 import { ConstructKind, SenseCode } from '../Constants.js';
 import { enptuiFail as fail } from '../DataStreamError.js';
@@ -54,8 +54,8 @@ export function decodeScrollBar (body, screen) {
     const totalRows   = readU32(body, 2);
     const sliderPos   = readU32(body, 6);
     const length      = body[10];
-    const anchorRow   = (screen.cursor / screen.cols) | 0;
-    const anchorCol   = screen.cursor % screen.cols;
+    const anchorRow   = (screen.writeAddress / screen.cols) | 0;
+    const anchorCol   = screen.writeAddress % screen.cols;
     const vertical    = direction === 0;
     const boundsWidth = vertical ? 3 : length;
     const boundsHeight = vertical ? length : 1;
@@ -63,22 +63,22 @@ export function decodeScrollBar (body, screen) {
         || anchorRow + boundsHeight > screen.rows
         || anchorCol + boundsWidth > screen.cols) return null;
 
-    // These are the exact cell-space quantities calculated by HOD's
-    // ENPTUIScrollBarField.init(). Keep the wire value (`sliderPos`) too,
+    // These are the exact cell-space quantities defined for scroll bars.
+    // Keep the wire value (`sliderPos`) too,
     // because that is what field metadata and host responses represent.
     const { actualSize, sliderCellPos, sliderCellSize } =
         scrollBarMetrics(length, totalRows, sliderPos, vertical);
 
     return {
         kind: ConstructKind.SCROLL_BAR,
-        cursorAtStart: screen.cursor,
+        cursorAtStart: screen.writeAddress,
         flag1,
         direction,
         rowOffset: anchorRow,
         colOffset: anchorCol,
         length,
         totalRows,
-        visibleRows: length,
+        visibleRows: vertical ? length : Math.max(0, length - 2),
         sliderPos,
         actualSize,
         sliderCellPos,
@@ -86,7 +86,7 @@ export function decodeScrollBar (body, screen) {
         boundsWidth,
         boundsHeight,
         moveCursor: (flag1 & 0x40) !== 0,
-        // HOD explicitly initializes standalone scroll pseudo-fields with
+        // Standalone scroll pseudo-fields initialize with
         // MDT off; only an operator scroll action marks them modified.
         modified: false,
         scrollIncrement: 0,

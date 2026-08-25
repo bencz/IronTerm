@@ -30,6 +30,13 @@ export class InputController {
      * @param {()=>void}            hooks.onFieldExit
      * @param {()=>void}            hooks.onFieldPlus
      * @param {()=>void}            hooks.onFieldMinus
+     * @param {()=>void}            hooks.onNewline
+     * @param {()=>void}            hooks.onDeleteWord
+     * @param {()=>void}            hooks.onEraseField
+     * @param {(backwards:boolean)=>void} hooks.onWordTab
+     * @param {()=>void}            hooks.onDup
+     * @param {()=>void}            hooks.onFieldMark
+     * @param {()=>void}            hooks.onReset
      */
     constructor (hooks) {
         this.h = hooks;
@@ -37,6 +44,8 @@ export class InputController {
         this.renderer = hooks.renderer;
         this.screen = hooks.screen;
         this.pendingPointer = null;
+        this.delayedPointer = null;
+        this.draggedScrollBar = null;
 
         this.selection = new Selection({
             canvas:        hooks.canvas,
@@ -46,16 +55,38 @@ export class InputController {
             onFlash:       hooks.onFlash,
             onClickCursor: (click) => this.#handleClick(click),
             onPointerEvent: (click) => this.#handlePointerEvent(click),
+            onPointerMove: (click) => this.#handlePointerMove(click),
             hasPointerDefinitions: () => this.#pointerDefinitions().length > 0,
         });
 
         this.#bindKeyboard();
     }
 
+    /** Cancel local gestures that cannot survive an operator Reset. */
+    resetTransientState () {
+        this.#clearPendingPointer();
+        this.#clearDelayedPointer();
+        this.draggedScrollBar = null;
+    }
+
     #handleClick (click) {
         if (this.#tryEnptuiClick(click)) return;
         const addr = click.row * this.screen.cols + click.col;
-        this.h.onMoveCursor?.(addr);
+        const pointerField = this.screen.logicalField(this.screen.fieldAt(addr));
+        if (!this.screen.keyboardLocked && pointerField?.pointerAid) {
+            this.#moveCursorWithInputPolicy(addr, null);
+            this.h.onAid?.(pointerField.pointerAid);
+            return;
+        }
+        const focused = this.screen.enptuiItemAtCursor?.();
+        const construct = focused?.construct;
+        if (construct
+            && [0x31, 0x32, 0x51].includes(construct.subType)
+            && construct.cancelAID) {
+            this.h.onAid?.(construct.cancelAID);
+            return;
+        }
+        this.#moveCursorWithInputPolicy(addr, null);
     }
 
     #pointerDefinitions () {
@@ -64,15 +95,39 @@ export class InputController {
     }
 
     #handlePointerEvent (click) {
-        // IBM routes selection-field and scrollbar cells through their
-        // construct handlers before consulting programmable mouse events.
-        if (this.#interactiveEnptuiAt(click.row + 1, click.col + 1)) return false;
+        if (this.draggedScrollBar && (click.pointerEvent === 2 || click.pointerEvent === 11)) {
+            this.#stopScrollBarDrag(click);
+            return true;
+        }
+        if ((click.pointerEvent === 1 || click.pointerEvent === 10)
+            && !this.screen.keyboardLocked) {
+            const hit = this.#scrollBarAt(click.row + 1, click.col + 1);
+            if (hit?.zone === 'thumb') {
+                this.draggedScrollBar = {
+                    scrollBar: hit.scrollBar,
+                    originalCellPos: hit.scrollBar.sliderCellPos,
+                    originalCursor: this.screen.cursor,
+                };
+                return true;
+            }
+        }
+        // Only an ordinary unshifted left press/release gives selection
+        // fields and scroll bars precedence over programmable mouse
+        // definitions. Middle/right, Shift-modified and double-click
+        // events remain programmable even on top of a GUI construct.
+        const plainLeftEvent = click.pointerEvent === 1 || click.pointerEvent === 2;
+        if (plainLeftEvent
+            && this.#interactiveEnptuiAt(click.row + 1, click.col + 1)) return false;
         const definitions = this.#pointerDefinitions();
         if (definitions.length === 0) {
-            this.pendingPointer = null;
-            this.screen.pointerMarker = null;
+            this.#clearPendingPointer();
+            this.#clearDelayedPointer();
             return false;
         }
+
+        const definition = definitions.find(d => d.firstEvent === click.pointerEvent);
+        if (click.pointerEvent % 3 === 0)
+            this.#cancelDelayedPointerForDoubleClick(click.pointerEvent);
 
         if (this.pendingPointer) {
             // Replacing the host's PMB definition invalidates a pending
@@ -80,24 +135,53 @@ export class InputController {
             // number. Definitions are immutable objects owned by the
             // currently active construct, so identity is unambiguous.
             if (!definitions.includes(this.pendingPointer.definition)) {
-                this.pendingPointer = null;
-                this.screen.pointerMarker = null;
+                this.#clearPendingPointer();
             }
+        }
+
+        // Release and double-click events use the normal operator cursor
+        // departure path before programmable processing. Press events are
+        // intentionally immediate and do not perform this validation.
+        const phase = (click.pointerEvent - 1) % 3;
+        if (phase !== 0 && (definition || this.pendingPointer)
+            && !this.screen.keyboardLocked) {
+            const previousCursor = this.screen.cursor;
+            const address = click.row * this.screen.cols + click.col;
+            const moved = this.h.onMoveCursor?.(address);
+            if (moved === false) return true;
+            // The programmable definition itself decides whether the
+            // pointer position or the original cursor is retained.
+            this.screen.cursor = previousCursor;
         }
 
         if (this.pendingPointer) {
             const pending = this.pendingPointer;
             if (this.screen.keyboardLocked) return false;
             if (pending.definition.secondEvent === click.pointerEvent) {
-                this.pendingPointer = null;
-                this.screen.pointerMarker = null;
-                this.#firePointerDefinition(pending.definition, click, true, pending.click);
+                this.#clearPendingPointer();
+                this.#processPointerDefinition(pending.definition, click, true, pending.click);
+                return true;
+            }
+            // A release-first double-event can be superseded by a related
+            // click definition received inside the platform double-click
+            // interval. This is how press/release/double combinations avoid
+            // leaving an obsolete first event pending indefinitely.
+            if (definition
+                && this.#shouldReplacePendingPointer(
+                    pending.definition.firstEvent, click.pointerEvent)
+                && pending.time !== 0
+                && Date.now() - pending.time <= 500) {
+                if ((definition.flags & 0x80) !== 0 && definition.secondEvent) {
+                    this.#setPendingPointer(definition, click);
+                } else {
+                    this.#clearPendingPointer();
+                    this.#processPointerDefinition(definition, click, false);
+                }
                 return true;
             }
             return false;
         }
 
-        const definition = definitions.find(d => d.firstEvent === click.pointerEvent);
         if (!definition) return false;
         if (this.screen.keyboardLocked) {
             const singleEvent = (definition.flags & 0x80) === 0;
@@ -106,21 +190,158 @@ export class InputController {
             return true;
         }
         if ((definition.flags & 0x80) !== 0 && definition.secondEvent) {
-            this.pendingPointer = { definition, click };
-            if ((definition.flags & 0x10) !== 0) {
-                this.screen.pointerMarker = { row: click.row, col: click.col };
-                this.renderer.draw();
-            }
+            this.#setPendingPointer(definition, click);
             return true;
         }
-        this.#firePointerDefinition(definition, click, false);
+        this.#processPointerDefinition(definition, click, false);
         return true;
+    }
+
+    #setPendingPointer (definition, click) {
+        this.#clearPendingPointer();
+        const releaseEvent = (definition.firstEvent - 1) % 3 === 1;
+        this.pendingPointer = {
+            definition,
+            click,
+            time: releaseEvent ? Date.now() : 0,
+        };
+        if ((definition.flags & 0x10) !== 0) {
+            this.screen.pointerMarker = { row: click.row, col: click.col };
+            this.renderer.draw();
+        }
+    }
+
+    #clearPendingPointer () {
+        const hadMarker = this.screen.pointerMarker !== null;
+        this.pendingPointer = null;
+        this.screen.pointerMarker = null;
+        if (hadMarker) this.renderer.draw();
+    }
+
+    #shouldReplacePendingPointer (firstEvent, currentEvent) {
+        if ((currentEvent - 1) % 3 !== 2) return false;
+        return firstEvent === currentEvent - 1 || firstEvent === currentEvent - 2;
+    }
+
+    #processPointerDefinition (definition, click, isDoubleEvent, originClick = click) {
+        this.#clearDelayedPointer();
+        if (this.#shouldDelayPointer(definition.firstEvent)) {
+            const delayed = { definition, click, isDoubleEvent, originClick, timer: null };
+            delayed.timer = globalThis.setTimeout(() => {
+                if (this.delayedPointer !== delayed) return;
+                this.delayedPointer = null;
+                if (!this.#pointerDefinitions().includes(definition)) return;
+                this.#firePointerDefinition(definition, click, isDoubleEvent, originClick);
+            }, 500);
+            this.delayedPointer = delayed;
+            return;
+        }
+        this.#firePointerDefinition(definition, click, isDoubleEvent, originClick);
+    }
+
+    #shouldDelayPointer (eventId) {
+        const phase = (eventId - 1) % 3;
+        if (phase === 2) return false;
+        const doubleClickEvent = eventId + (phase === 0 ? 2 : 1);
+        return this.#pointerDefinitions().some(
+            definition => definition.firstEvent === doubleClickEvent);
+    }
+
+    #cancelDelayedPointerForDoubleClick (eventId) {
+        const delayedEvent = this.delayedPointer?.definition.firstEvent;
+        if (!delayedEvent) return;
+        if (delayedEvent === eventId - 1 || delayedEvent === eventId - 2)
+            this.#clearDelayedPointer();
+    }
+
+    #clearDelayedPointer () {
+        if (this.delayedPointer && this.delayedPointer.timer !== null)
+            globalThis.clearTimeout(this.delayedPointer.timer);
+        this.delayedPointer = null;
+    }
+
+    #handlePointerMove (click) {
+        const drag = this.draggedScrollBar;
+        if (!drag) return false;
+        const sb = drag.scrollBar;
+        const vertical = sb.direction === 0;
+        const axis = vertical ? click.row : click.col;
+        // Vertical slider positions are row offsets from the anchor. A
+        // horizontal bar has a leading attribute cell and the protocol's
+        // slider position is one greater than the pointer's anchor-relative
+        // column. Treating both axes alike shifts a horizontal drag two
+        // cells toward the decrement arrow.
+        const requestedPos = vertical
+            ? axis - sb.rowOffset
+            : axis - sb.colOffset + 1;
+        // Vertical bars reserve the final row for the increment arrow.
+        // Horizontal bars also have a leading attribute cell, so their
+        // last legal thumb position is one cell earlier.
+        const trailingCells = vertical ? 1 : 3;
+        const maxPos = Math.max(1, sb.length - trailingCells - (sb.sliderCellSize ?? 1));
+        sb.sliderCellPos = Math.max(1, Math.min(maxPos, requestedPos));
+        this.renderer.draw();
+        return true;
+    }
+
+    #stopScrollBarDrag (click) {
+        const drag = this.draggedScrollBar;
+        this.draggedScrollBar = null;
+        if (!drag) return;
+        const sb = drag.scrollBar;
+        const current = sb.sliderCellPos;
+        const releasedAddress = click
+            ? click.row * this.screen.cols + click.col
+            : this.screen.cursor;
+        const moved = this.h.onMoveCursor?.(releasedAddress);
+        if (moved === false) {
+            sb.sliderCellPos = drag.originalCellPos;
+            this.renderer.draw();
+            return;
+        }
+        if (sb.moveCursor) {
+            const addr = sb.direction === 0
+                ? (sb.rowOffset + current) * this.screen.cols + sb.colOffset + 1
+                : sb.rowOffset * this.screen.cols + sb.colOffset + current + 1;
+            this.h.onMoveCursor?.(addr);
+        } else {
+            this.screen.cursor = drag.originalCursor;
+            this.renderer.draw();
+        }
+        if (current === drag.originalCellPos) return;
+
+        const vertical = sb.direction === 0;
+        const atTop = current === 1;
+        const maxPos = Math.max(1,
+            sb.length - (vertical ? 1 : 3) - (sb.sliderCellSize ?? 1));
+        const visible = vertical ? sb.length : Math.max(1, sb.length - 2);
+        let target = Math.floor(current * sb.totalRows / Math.max(1, sb.actualSize));
+        if (atTop) target = 0;
+        if (current === maxPos) target = Math.max(0, sb.totalRows - sb.length);
+        // A zero result is meaningful here: the cell-space thumb moved,
+        // but integer scaling mapped it back to the same dataset offset.
+        // ENPTUI encodes that case as a page-sized increment rather than
+        // suppressing the operator action.
+        const computedIncrement = Math.abs(target - sb.sliderPos);
+        const increment = computedIncrement || sb.length;
+
+        sb.scrollIncrement = increment;
+        sb.modified = true;
+        if (sb.parent) sb.parent.modified = true;
+        const towardStart = current < drag.originalCellPos;
+        this.h.onAid?.(vertical
+            ? (towardStart ? Aid.ROLL_DOWN : Aid.ROLL_UP)
+            : (towardStart ? Aid.ROLL_LEFT : Aid.ROLL_RIGHT));
     }
 
     #firePointerDefinition (definition, click, isDoubleEvent, originClick = click) {
         if ((definition.flags & 0x40) !== 0) {
             const addr = click.row * this.screen.cols + click.col;
-            this.h.onMoveCursor?.(addr);
+            // Departure validation already occurred for release/double
+            // events. A press definition is specified as immediate, so its
+            // move is likewise a direct programmable cursor placement.
+            this.screen.cursor = addr;
+            this.renderer.draw();
         }
         if (!definition.aidCode) return;
         if (isDoubleEvent) {
@@ -136,23 +357,23 @@ export class InputController {
     }
 
     #interactiveEnptuiAt (row1, col1) {
-        for (const c of this.screen.enptui?.all ?? []) {
+        for (const c of this.screen.enptui?.frontToBack ?? []) {
+            if (c.kind === ConstructKind.WINDOW) {
+                const bounds = this.screen.enptui.boundsOf(c);
+                if (bounds && row1 >= bounds.top && row1 <= bounds.bottom
+                    && col1 >= bounds.left && col1 <= bounds.right) return false;
+                continue;
+            }
             if (c.kind === ConstructKind.SCROLL_BAR) {
-                const vertical = c.direction === 0;
-                const axis = vertical ? row1 : col1;
-                const offAxis = vertical ? col1 : row1;
-                const start = vertical ? c.rowOffset + 1 : c.colOffset + 2;
-                const end = vertical ? start + c.length - 1 : c.colOffset + c.length - 1;
-                const center = vertical ? c.colOffset + 2 : c.rowOffset + 1;
-                if (offAxis === center && axis >= start && axis <= end) return true;
+                if (this.#scrollBarAt(row1, col1, c)) return true;
                 continue;
             }
             if (!c.itemPositions) continue;
             for (let i = 0; i < c.itemPositions.length; i++) {
-                if (c.items?.[i]?.nonCursorable) continue;
                 const pos = c.itemPositions[i];
                 const width = pos.hitWidth ?? pos.slotWidth ?? c.textSize ?? 1;
-                if (row1 === pos.row && col1 >= pos.col && col1 < pos.col + width) return true;
+                const start = pos.hitCol ?? pos.col;
+                if (row1 === pos.row && col1 >= start && col1 < start + width) return true;
             }
         }
         return false;
@@ -161,6 +382,22 @@ export class InputController {
     // ---- keyboard -----------------------------------------------------
 
     #bindKeyboard () {
+        document.addEventListener('paste', (event) => {
+            const tag = document.activeElement?.tagName;
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+            const text = event.clipboardData?.getData('text/plain');
+            if (typeof text !== 'string') return;
+            event.preventDefault();
+            if (this.screen.errorHelpMode) return;
+            if (this.screen.errorMode) {
+                this.screen.alarm = true;
+                this.h.onFlash?.('reset required');
+                this.renderer.draw();
+                return;
+            }
+            this.selection.pasteText(text);
+        });
+
         document.addEventListener('keydown', async (event) => {
             // Let the toolbar / form fields keep their own input. Match
             // the same activeElement guard tn3270 uses so typing into
@@ -170,12 +407,26 @@ export class InputController {
                 return;
             const mod = event.metaKey || event.ctrlKey;
 
+            // After Error Help is requested, only Reset and the four
+            // cursor keys dismiss that state. Cursor movement then proceeds
+            // normally; every other key is consumed while the host-owned
+            // help transaction remains outstanding.
+            if (this.screen.errorHelpMode) {
+                const arrow = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']
+                    .includes(event.key);
+                if (event.key === 'Escape' || arrow) {
+                    event.preventDefault();
+                    this.h.onReset?.();
+                    if (event.key === 'Escape') return;
+                } else {
+                    event.preventDefault();
+                    return;
+                }
+            }
+
             // Clipboard shortcuts (work offline too).
             if (mod && event.key.toLowerCase() === 'c') {
                 event.preventDefault(); await this.selection.copy(); return;
-            }
-            if (mod && event.key.toLowerCase() === 'v') {
-                event.preventDefault(); await this.selection.paste(); return;
             }
             if (mod && event.key.toLowerCase() === 'a') {
                 event.preventDefault(); this.selection.selectAll(); return;
@@ -183,6 +434,29 @@ export class InputController {
             // Ctrl chords for 5250-specific AIDs not on a function key.
             if (mod && event.key.toLowerCase() === 'h') {
                 event.preventDefault(); this.h.onAid?.(Aid.HELP); return;
+            }
+
+            // A host-written error line temporarily owns the keyboard.
+            // Character/editing keys are rejected while navigation and
+            // AID keys first restore the underlying message line and then
+            // continue normally. Help above is special: it asks the host
+            // for the explanation associated with the displayed code.
+            if (this.screen.errorMode) {
+                if (this.#isErrorEditingKey(event, mod)) {
+                    event.preventDefault();
+                    this.screen.alarm = true;
+                    this.h.onFlash?.('reset required');
+                    this.renderer.draw();
+                    return;
+                }
+                this.h.onReset?.();
+            }
+
+            if (mod && event.key.toLowerCase() === 'v') {
+                // Let the browser dispatch its trusted `paste` event. Reading
+                // navigator.clipboard here makes Firefox show a confirmation
+                // menu instead of pasting immediately.
+                return;
             }
             if (mod && event.key.toLowerCase() === 'p') {
                 event.preventDefault(); this.h.onAid?.(Aid.PRINT); return;
@@ -192,14 +466,44 @@ export class InputController {
             if (event.shiftKey && event.key === 'Escape') {
                 event.preventDefault(); this.h.onSystemRequest?.(); return;
             }
-            if (event.code === 'NumpadEnter') {
-                event.preventDefault(); this.h.onFieldExit?.(); return;
-            }
             if (event.code === 'NumpadAdd') {
-                event.preventDefault(); this.h.onFieldPlus?.(); return;
+                event.preventDefault();
+                if (this.screen.enptuiItemAtCursor?.()) this.#tab(false);
+                else this.h.onFieldPlus?.();
+                return;
             }
             if (event.code === 'NumpadSubtract') {
-                event.preventDefault(); this.h.onFieldMinus?.(); return;
+                event.preventDefault();
+                if (this.screen.enptuiItemAtCursor?.()) this.#tab(false);
+                else this.h.onFieldMinus?.();
+                return;
+            }
+
+            // Keep both physical Enter keys as the Enter AID. Dedicated
+            // editing functions use explicit chords so laptop keyboards
+            // without a numeric keypad remain fully usable.
+            if (mod && event.key === 'Enter') {
+                event.preventDefault();
+                if (this.screen.enptuiItemAtCursor?.()) this.#tab(false);
+                else this.h.onFieldExit?.();
+                return;
+            }
+            if (event.shiftKey && event.key === 'Enter') {
+                event.preventDefault(); this.#newline(); return;
+            }
+            if (mod && event.shiftKey && event.key.toLowerCase() === 'd') {
+                event.preventDefault();
+                if (this.screen.enptuiItemAtCursor?.())
+                    this.#rejectEnptuiChoice('invalid selection key');
+                else this.h.onDup?.();
+                return;
+            }
+            if (mod && event.shiftKey && event.key.toLowerCase() === 'm') {
+                event.preventDefault();
+                if (this.screen.enptuiItemAtCursor?.())
+                    this.#rejectEnptuiChoice('invalid selection key');
+                else this.h.onFieldMark?.();
+                return;
             }
 
             // Alt+letter: ENPTUI mnemonic activation. Walk every
@@ -224,11 +528,7 @@ export class InputController {
                 // Error Reset clears local error/alarm state. It must not
                 // override a host-owned system-wait keyboard lock.
                 event.preventDefault();
-                this.screen.alarm = false;
-                this.screen.errorMode = false;
-                this.screen.errorHelpMode = false;
-                this.h.onFlash?.('reset');
-                this.renderer.draw();
+                this.h.onReset?.();
                 return;
             }
 
@@ -243,25 +543,55 @@ export class InputController {
 
             if (event.key === 'Tab') {
                 event.preventDefault();
-                if (event.shiftKey) this.h.onBackTab?.();
-                else                this.h.onTab?.();
+                this.#tab(event.shiftKey);
                 return;
             }
-            if (event.key === 'Backspace')  { event.preventDefault(); this.h.onBackspace?.(); return; }
+            if (event.key === 'Backspace')  {
+                event.preventDefault();
+                // A selection pseudo-field owns editing keys while the
+                // cursor is on one of its choices. Backspace is consumed;
+                // it must not alter a presentation-space field underneath.
+                if (!this.screen.enptuiItemAtCursor?.()) {
+                    if (mod && event.shiftKey) this.h.onEraseField?.();
+                    else if (mod) this.h.onDeleteWord?.();
+                    else this.h.onBackspace?.();
+                }
+                return;
+            }
             if (event.key === 'Insert')     { event.preventDefault(); this.h.onInsert?.(); return; }
             if (event.key === 'Delete') {
                 event.preventDefault();
-                if (event.ctrlKey || event.metaKey) this.h.onEraseInput?.();
-                else if (event.altKey) this.h.onEraseEof?.();
-                else this.h.onDelete?.();
+                if (event.ctrlKey || event.metaKey) this.#eraseInput();
+                else if (event.altKey) {
+                    if (this.screen.enptuiItemAtCursor?.())
+                        this.#rejectEnptuiChoice('invalid selection key');
+                    else this.h.onEraseEof?.();
+                }
+                else {
+                    const hit = this.screen.enptuiItemAtCursor?.();
+                    if (hit) this.#deselectEnptuiItem(hit.construct, hit.index);
+                    else this.h.onDelete?.();
+                }
                 return;
             }
 
             if (event.key === 'Home')       { event.preventDefault(); this.#home(); return; }
-            if (event.key === 'End')        { event.preventDefault(); this.#end(); return; }
+            if (event.key === 'End') {
+                event.preventDefault();
+                // End is consumed by a selection pseudo-field.  It must
+                // not act on an ordinary input field underneath the GUI
+                // construct.
+                if (!this.screen.enptuiItemAtCursor?.()) this.#end();
+                return;
+            }
 
             if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) {
                 event.preventDefault();
+                if (mod && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+                    if (!this.screen.enptuiItemAtCursor?.())
+                        this.h.onWordTab?.(event.key === 'ArrowLeft');
+                    return;
+                }
                 this.#arrow(event.key);
                 return;
             }
@@ -286,6 +616,17 @@ export class InputController {
         });
     }
 
+    #isErrorEditingKey (event, mod) {
+        if (mod && event.key.toLowerCase() === 'v') return true;
+        if (event.key.length === 1 && !mod) return true;
+        if (['Backspace', 'Delete'].includes(event.key)) return true;
+        if (event.code === 'NumpadAdd' || event.code === 'NumpadSubtract') return true;
+        if (event.key === 'Enter' && (mod || event.shiftKey)) return true;
+        if (mod && event.shiftKey
+            && ['d', 'm'].includes(event.key.toLowerCase())) return true;
+        return false;
+    }
+
     /** Translate a keyboard event into a 5250 AID name (or null). The
      *  mapping follows the IBM i operator convention used by every
      *  5250 emulator: F1-F12 send PF1-12, Shift+F1-F12 send PF13-24,
@@ -293,12 +634,12 @@ export class InputController {
      *  semantics are flipped from the keyboard label - rolling "up"
      *  brings later content into view, like Page Down). */
     #functionKeyName (event) {
-        if (event.key === 'Enter')    return 'Enter';
+        if (event.key === 'Enter' || event.code === 'NumpadEnter') return 'Enter';
         if (event.key === 'PageDown') return 'RollUp';   // bring next page up
         if (event.key === 'PageUp')   return 'RollDown'; // bring previous page down
         if (event.key.startsWith('F') && /^F([1-9]|1[0-9]|2[0-4])$/.test(event.key)) {
             const n = parseInt(event.key.slice(1), 10);
-            return event.shiftKey ? `PF${n + 12}` : `PF${n}`;
+            return event.shiftKey && n <= 12 ? `PF${n + 12}` : `PF${n}`;
         }
         return null;
     }
@@ -307,26 +648,93 @@ export class InputController {
      *  non-bypass field (matches IBM 5250 Home key behaviour). */
     #home () {
         const target = this.screen.homePosition();
-        if (target !== null) this.h.onMoveCursor?.(target);
+        if (target === null) return;
+        if (target === this.screen.cursor) this.h.onAid?.(Aid.HOME);
+        else this.h.onMoveCursor?.(target);
     }
 
-    /** End walks the current field forward to the last non-null cell -
-     *  the natural position after the user types into it. */
+    #tab (backwards) {
+        const hit = this.screen.enptuiItemAtCursor?.();
+        if (hit) {
+            const { construct, index } = hit;
+            const cursorable = (construct.itemPositions ?? [])
+                .map((pos, i) => ({ pos, i }))
+                .filter(entry => entry.pos && !construct.items?.[entry.i]?.nonCursorable);
+            const current = cursorable.findIndex(entry => entry.i === index);
+
+            if (construct.fieldAdvance) {
+                const target = cursorable[current + (backwards ? -1 : 1)];
+                if (target) {
+                    this.h.onMoveCursor?.(target.pos.textIdx);
+                    return;
+                }
+            }
+        }
+        if (backwards) this.h.onBackTab?.();
+        else this.h.onTab?.();
+    }
+
+    #newline () {
+        const hit = this.screen.enptuiItemAtCursor?.();
+        if (hit) {
+            const current = hit.construct.itemPositions?.[hit.index];
+            const entries = hit.construct.itemPositions
+                ?.map((pos, i) => ({ pos, i, item: hit.construct.items?.[i] })) ?? [];
+            // Newline first addresses the construct's left edge on the next
+            // physical row. If that slot is structural/non-cursorable, the
+            // search continues forward through later choices and wraps only
+            // when the addressed row itself belongs to the construct.
+            const nextRow = current?.row + 1;
+            const rowEntries = entries.filter(entry => entry.pos?.row === nextRow)
+                .sort((a, b) => a.pos.textCol - b.pos.textCol);
+            let target = null;
+            if (rowEntries.length) {
+                const startIndex = rowEntries[0].i;
+                target = entries.find(entry => entry.i >= startIndex
+                    && entry.pos && !entry.item?.nonCursorable)
+                    ?? entries.find(entry => entry.pos && !entry.item?.nonCursorable);
+            }
+            if (target) {
+                this.#moveCursorWithInputPolicy(target.pos.textIdx, 'ArrowDown');
+                return;
+            }
+        }
+        this.h.onNewline?.();
+    }
+
+    /** End locates the end of the entered data from the current display
+     *  row onward. A completely full field stays on its final cell; a
+     *  partially filled field lands on the first blank after the data. */
     #end () {
         const s = this.screen;
         const here = s.cursor;
-        const field = s.fieldAt(here);
+        const field = s.logicalField(s.fieldAt(here));
         if (!field || field.bypass) return;
-        let last = (field.start + 1) % s.size;
-        let p = (field.start + 1) % s.size;
-        // `field.length` is the count of data cells (excludes attr).
-        for (let n = 0; n < field.length; n++) {
-            const cell = s.cells[p];
-            if (cell && cell.byte !== 0x00 && cell.glyph !== ' ')
-                last = (p + 1) % s.size;
-            p = (p + 1) % s.size;
+        const chain = s.fieldChain(field);
+        const rowStart = Math.floor(here / s.cols) * s.cols;
+        const positions = [];
+        for (const segment of chain) {
+            let p = (segment.start + 1) % s.size;
+            for (let n = 0; n < segment.length; n++) {
+                positions.push(p);
+                p = (p + 1) % s.size;
+            }
         }
-        this.h.onMoveCursor?.(last);
+
+        let first = positions.findIndex(position => position >= rowStart);
+        if (first < 0) first = 0;
+        let lastData = -1;
+        for (let i = positions.length - 1; i >= first; i--) {
+            const byte = s.cells[positions[i]]?.byte ?? 0x00;
+            if (byte !== 0x00 && byte !== 0x40) {
+                lastData = i;
+                break;
+            }
+        }
+        const targetIndex = lastData < 0
+            ? first
+            : Math.min(lastData + 1, positions.length - 1);
+        this.h.onMoveCursor?.(positions[targetIndex]);
     }
 
     #arrow (key) {
@@ -341,20 +749,26 @@ export class InputController {
         // ENPTUI window cursor restriction. If the cursor was inside a
         // window that was created with the "restricted cursor" flag
         // (flag1 bit 0x80 in CreateWindow) AND the host hasn't
-        // sent UNREST_WIN_CURSOR since, clamp the new position to the
-        // window's interior, per the ENPTUI reference.
+        // sent UNREST_WIN_CURSOR since, wrap the new position to the
+        // opposite edge of the window's interior.
         const window = this.#enclosingRestrictedWindow(s.cursor);
         if (window) {
-            const target = this.#clampToWindow(addr, window);
+            const target = this.#wrapInWindow(key, addr, window);
             if (target !== null) addr = target;
         }
-        this.h.onMoveCursor?.(addr);
+        this.#moveCursorWithInputPolicy(addr, key);
     }
 
     #navigateEnptui (key) {
         const hit = this.screen.enptuiItemAtCursor?.();
         if (!hit) return false;
         const { construct, index } = hit;
+        // A non-exitable menu bar is one horizontal navigation ring.
+        // Up/Down therefore have the same meaning as Left/Right.
+        if (construct.kind === ConstructKind.MENU_BAR && !construct.cursorExitable) {
+            if (key === 'ArrowUp') key = 'ArrowLeft';
+            else if (key === 'ArrowDown') key = 'ArrowRight';
+        }
         const item = construct.items[index];
         const scrollAid = key === 'ArrowLeft'  && item.leftChoice  ? Aid.ROLL_LEFT
             : key === 'ArrowRight' && item.rightChoice ? Aid.ROLL_RIGHT
@@ -366,77 +780,205 @@ export class InputController {
             return true;
         }
 
-        const current = construct.itemPositions[index];
-        const candidates = construct.itemPositions
-            .map((pos, i) => ({ pos, i, item: construct.items[i] }))
-            .filter(entry => entry.pos && !entry.item.nonCursorable && entry.i !== index);
-        let eligible;
-        if (key === 'ArrowLeft' || key === 'ArrowRight') {
-            eligible = candidates.filter(entry => entry.pos.row === current.row
-                && (key === 'ArrowLeft' ? entry.pos.textCol < current.textCol
-                                        : entry.pos.textCol > current.textCol));
-            eligible.sort((a, b) => key === 'ArrowLeft'
-                ? b.pos.textCol - a.pos.textCol : a.pos.textCol - b.pos.textCol);
-        } else {
-            eligible = candidates.filter(entry => key === 'ArrowUp'
-                ? entry.pos.row < current.row : entry.pos.row > current.row);
-            eligible.sort((a, b) => {
-                const rowA = Math.abs(a.pos.row - current.row);
-                const rowB = Math.abs(b.pos.row - current.row);
-                return rowA - rowB
-                    || Math.abs(a.pos.textCol - current.textCol)
-                     - Math.abs(b.pos.textCol - current.textCol);
-            });
-        }
-
-        let target = eligible[0];
-        if (!target && !construct.cursorExitable && candidates.length) {
-            const all = construct.itemPositions
-                .map((pos, i) => ({ pos, i, item: construct.items[i] }))
-                .filter(entry => entry.pos && !entry.item.nonCursorable);
-            target = (key === 'ArrowLeft' || key === 'ArrowUp') ? all.at(-1) : all[0];
-        }
+        const target = this.#selectionNavigationTarget(construct, index, key);
         if (target) {
-            this.h.onMoveCursor?.(target.pos.textIdx);
+            this.#moveCursorWithInputPolicy(target.pos.textIdx, key);
             return true;
         }
 
-        const pullDown = [0x31, 0x32, 0x51].includes(construct.subType);
-        if (pullDown && construct.cancelAID) {
-            this.h.onAid?.(construct.cancelAID);
+        if (construct.cursorExitable
+            && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+            const row0 = construct.itemPositions[index].row - 1;
+            const leftCol0 = Math.max(0, (construct.boundsLeftCol ?? 1) - 2);
+            const rightCol0 = Math.min(this.screen.cols - 1,
+                (construct.boundsLeftCol ?? 1) - 1 + (construct.boundsWidth ?? 1));
+            let addr = row0 * this.screen.cols
+                + (key === 'ArrowLeft' ? leftCol0 : rightCol0);
+            // Selection-field navigation is processed before the ordinary
+            // cursor path. It must still honour the current window's cursor
+            // restriction when the field itself permits an edge exit.
+            const window = this.#enclosingRestrictedWindow(this.screen.cursor);
+            if (window) addr = this.#wrapInWindow(key, addr, window) ?? addr;
+            this.#moveCursorWithInputPolicy(addr, key);
             return true;
         }
         return false;
     }
 
-    /** Find the most-recently-defined restricted ENPTUI window that
-     *  contains buffer index `cursor`. Returns null if no such window
-     *  is active or the cursor is outside every restricted window. */
+    #moveCursorWithInputPolicy (addr, key) {
+        const s = this.screen;
+        const enabled = s.soh?.cursorMoveToInput
+            || (s.enptui?.all ?? []).some(c => c.cursorMoveToInput);
+        if (enabled && !this.#inputPositionAt(addr))
+            addr = this.#nearestInputPosition(addr, key);
+        this.h.onMoveCursor?.(addr);
+    }
+
+    #inputPositionAt (addr) {
+        const field = this.screen.logicalField(this.screen.fieldAt(addr));
+        if (field && !field.bypass) return true;
+        for (const construct of this.screen.enptui?.all ?? []) {
+            for (let i = 0; i < (construct.itemPositions?.length ?? 0); i++) {
+                if (construct.items?.[i]?.nonCursorable) continue;
+                if (construct.itemPositions[i]?.textIdx === addr) return true;
+            }
+        }
+        return false;
+    }
+
+    #nearestInputPosition (addr, key) {
+        const s = this.screen;
+        const candidates = new Set();
+        for (const field of s.fields) {
+            const logical = s.logicalField(field);
+            if (!logical || logical.bypass) continue;
+            for (let n = 1; n <= field.length; n++)
+                candidates.add((field.start + n) % s.size);
+        }
+        for (const construct of s.enptui?.all ?? []) {
+            for (let i = 0; i < (construct.itemPositions?.length ?? 0); i++) {
+                if (construct.items?.[i]?.nonCursorable) continue;
+                const textIdx = construct.itemPositions[i]?.textIdx;
+                if (Number.isInteger(textIdx)) candidates.add(textIdx);
+            }
+        }
+        if (candidates.size === 0) return 0;
+        const ordered = [...candidates].sort((a, b) => a - b);
+        if (key === 'ArrowLeft')
+            return ordered.findLast(value => value <= addr) ?? ordered.at(-1);
+        if (key === 'ArrowRight')
+            return ordered.find(value => value >= addr) ?? ordered[0];
+
+        const targetRow = (addr / s.cols) | 0;
+        const targetCol = addr % s.cols;
+        const direction = key === 'ArrowUp' ? -1 : 1;
+        for (let offset = 0; offset < s.rows; offset++) {
+            const row = (targetRow + direction * offset + s.rows) % s.rows;
+            const inRow = ordered.filter(value => (value / s.cols | 0) === row);
+            if (!inRow.length) continue;
+            inRow.sort((a, b) => {
+                const da = Math.abs(a % s.cols - targetCol);
+                const db = Math.abs(b % s.cols - targetCol);
+                return da - db || b - a;
+            });
+            return inRow[0];
+        }
+        return 0;
+    }
+
+    /** Resolve directional movement in the construct's logical choice
+     *  matrix. At a non-exitable boundary, horizontal movement continues
+     *  in reading order and vertical movement continues in column order. */
+    #selectionNavigationTarget (construct, index, key) {
+        const positions = construct.itemPositions ?? [];
+        const items = construct.items ?? [];
+        const valid = i => i >= 0 && i < items.length
+            && positions[i] && !items[i].nonCursorable;
+        const cursorable = positions
+            .map((pos, i) => ({ pos, i, item: items[i] }))
+            .filter(entry => entry.pos && !entry.item.nonCursorable);
+        if (cursorable.length <= 1) return construct.cursorExitable ? null : cursorable[0];
+
+        const rows = new Map();
+        for (let i = 0; i < positions.length; i++) {
+            if (!positions[i]) continue;
+            const row = positions[i].row;
+            if (!rows.has(row)) rows.set(row, []);
+            rows.get(row).push(i);
+        }
+        const inferredCols = Math.max(1, ...[...rows.values()].map(indices => indices.length));
+        const cols = Math.max(1, construct.numOfCols || inferredCols);
+        const rowStart = Math.floor(index / cols) * cols;
+        const rowEnd = Math.min(items.length - 1, rowStart + cols - 1);
+
+        if (key === 'ArrowLeft' || key === 'ArrowRight') {
+            const step = key === 'ArrowLeft' ? -1 : 1;
+            const edge = key === 'ArrowLeft' ? rowStart : rowEnd;
+            for (let i = index + step;
+                step < 0 ? i >= edge : i <= edge; i += step) {
+                if (valid(i)) return { pos: positions[i], i, item: items[i] };
+            }
+            if (construct.cursorExitable) return null;
+            for (let offset = 1; offset < items.length; offset++) {
+                const i = (index + step * offset + items.length) % items.length;
+                if (valid(i)) return { pos: positions[i], i, item: items[i] };
+            }
+            return null;
+        }
+
+        const col = index % cols;
+        const step = key === 'ArrowUp' ? -cols : cols;
+        for (let i = index + step; i >= 0 && i < items.length; i += step) {
+            if (valid(i)) return { pos: positions[i], i, item: items[i] };
+        }
+        if (construct.cursorExitable) return null;
+
+        // Crossing the top/bottom moves to the preceding/following
+        // logical column, then searches from the opposite vertical edge.
+        const nextCol = key === 'ArrowUp'
+            ? (col - 1 + cols) % cols
+            : (col + 1) % cols;
+        if (key === 'ArrowUp') {
+            let i = nextCol + Math.floor((items.length - 1 - nextCol) / cols) * cols;
+            for (; i >= 0; i -= cols) {
+                if (valid(i)) return { pos: positions[i], i, item: items[i] };
+            }
+        } else {
+            for (let i = nextCol; i < items.length; i += cols) {
+                if (valid(i)) return { pos: positions[i], i, item: items[i] };
+            }
+        }
+        return null;
+    }
+
+    /** Return the current restricted ENPTUI window when it contains the
+     *  cursor. Removing the current window deliberately does not make an
+     *  older window current again. */
     #enclosingRestrictedWindow (cursor) {
         const s = this.screen;
         if (!s.enptui) return null;
         const r = (cursor / s.cols | 0) + 1;
         const c = (cursor % s.cols) + 1;
-        for (const w of s.enptui.all) {
-            if (w.kind !== ConstructKind.WINDOW) continue;
-            if (!w.cursorRestricted) continue;
-            if (r >= w.innerTopRow && r < w.innerTopRow + w.innerHeight
-             && c >= w.innerLeftCol && c < w.innerLeftCol + w.innerWidth) return w;
-        }
-        return null;
+        const window = s.enptui.all.findLast(construct =>
+            construct.kind === ConstructKind.WINDOW
+            && construct.cursorAtStart === s.currentEnptuiWindowAddress);
+        if (!window?.cursorRestricted) return null;
+        return r >= window.innerTopRow && r < window.innerTopRow + window.innerHeight
+            && c >= window.innerLeftCol && c < window.innerLeftCol + window.innerWidth
+            ? window : null;
     }
 
-    /** Project buffer index `addr` back into the window's interior.
-     *  Returns the clamped index, or null when no clamp was needed. */
-    #clampToWindow (addr, w) {
+    /** Wrap an attempted move that escaped a restricted window back to
+     *  the opposite edge. Horizontal movement follows reading order;
+     *  vertical movement preserves the column. */
+    #wrapInWindow (key, addr, w) {
         const s = this.screen;
         const r = (addr / s.cols | 0) + 1;
         const c = (addr % s.cols) + 1;
         const top = w.innerTopRow,    bot   = w.innerTopRow  + w.innerHeight - 1;
         const left = w.innerLeftCol,  right = w.innerLeftCol + w.innerWidth  - 1;
         if (r >= top && r <= bot && c >= left && c <= right) return null;
-        const rr = Math.max(top, Math.min(bot, r));
-        const cc = Math.max(left, Math.min(right, c));
+        const currentRow = (s.cursor / s.cols | 0) + 1;
+        const currentCol = (s.cursor % s.cols) + 1;
+        let rr = currentRow;
+        let cc = currentCol;
+        if (key === 'ArrowLeft') {
+            if (currentRow === top && currentCol === left) {
+                rr = bot; cc = right;
+            } else {
+                rr = currentRow - 1; cc = right;
+            }
+        } else if (key === 'ArrowRight') {
+            if (currentRow === bot && currentCol === right) {
+                rr = top; cc = left;
+            } else {
+                rr = currentRow + 1; cc = left;
+            }
+        } else if (key === 'ArrowUp') {
+            rr = bot;
+        } else if (key === 'ArrowDown') {
+            rr = top;
+        }
         return (rr - 1) * s.cols + (cc - 1);
     }
 
@@ -452,7 +994,13 @@ export class InputController {
         const row1 = click.row + 1;
         const col1 = click.col + 1;
 
-        for (const c of s.enptui.all) {
+        for (const c of s.enptui.frontToBack) {
+            if (c.kind === ConstructKind.WINDOW) {
+                const bounds = s.enptui.boundsOf(c);
+                if (bounds && row1 >= bounds.top && row1 <= bounds.bottom
+                    && col1 >= bounds.left && col1 <= bounds.right) return false;
+                continue;
+            }
             if (c.kind === ConstructKind.SCROLL_BAR) {
                 if (this.#tryScrollBarClick(c, row1, col1)) return true;
                 continue;
@@ -461,16 +1009,30 @@ export class InputController {
                 && c.kind !== ConstructKind.PUSH_BUTTONS
                 && c.kind !== ConstructKind.MENU_BAR) continue;
             for (let i = 0; i < c.items.length; i++) {
-                if (c.items[i].nonCursorable) continue;
                 const pos = c.itemPositions?.[i];
                 if (!pos) continue;
-                const startCol = pos.col;
-                const endCol   = pos.col + (pos.hitWidth ?? pos.slotWidth ?? c.textSize ?? 1) - 1;
+                const startCol = pos.hitCol ?? pos.col;
+                const endCol   = startCol
+                    + (pos.hitWidth ?? pos.slotWidth ?? c.textSize ?? 1) - 1;
                 if (row1 !== pos.row) continue;
                 if (col1 < startCol || col1 > endCol) continue;
                 if (s.keyboardLocked) return true;
-                if (c.pointerMayMoveCursor) this.h.onMoveCursor?.(pos.textIdx);
+                if (c.items[i].nonCursorable) {
+                    this.#rejectEnptuiChoice();
+                    return true;
+                }
+                // Pointer activation is still an attempted cursor move even
+                // when the construct asks us to restore the old cursor after
+                // the click. Mandatory-fill/self-check departure rules can
+                // therefore veto the activation before choice state changes.
+                const previousCursor = s.cursor;
+                const moved = this.h.onMoveCursor?.(pos.textIdx);
+                if (moved === false) return true;
                 this.#activateEnptuiItem(c, i);
+                if (!c.pointerMayMoveCursor) {
+                    s.cursor = previousCursor;
+                    this.renderer.draw();
+                }
                 return true;
             }
         }
@@ -479,15 +1041,21 @@ export class InputController {
 
     #selectionCharacter (ch, hit) {
         const { construct } = hit;
-        const byte = this.screen.ebcdic.fromCharCode(ch.codePointAt(0));
-        if (ch === '/' || (construct.selectChar && byte === construct.selectChar)) {
+        // Slash is the workstation's built-in Select key.  The host may
+        // additionally supply another selection character; comparison of
+        // that character follows operator-key semantics and is therefore
+        // case-insensitive in the active code page.
+        const configured = construct.selectChar
+            ? this.screen.ebcdic.toChar(construct.selectChar)
+            : '';
+        if (ch === '/' || (configured && configured.toUpperCase() === ch.toUpperCase())) {
             this.#selectEnptuiItem(construct, hit.index);
             return true;
         }
 
         const target = ch.toLowerCase();
         const mnemonicIndex = construct.items.findIndex(item => {
-            if (item.unavailable || item.mnemonicOffset < 0) return false;
+            if (item.nonCursorable || item.mnemonicOffset < 0) return false;
             const mnemonicByte = item.textBytes?.[item.mnemonicOffset];
             return mnemonicByte !== undefined
                 && this.screen.ebcdic.toChar(mnemonicByte)?.toLowerCase() === target;
@@ -501,19 +1069,23 @@ export class InputController {
 
         // A selection pseudo-field owns character input while focused;
         // unmatched text must not leak into an underlying 5250 field.
-        this.h.onFlash?.('invalid selection key');
+        this.#rejectEnptuiChoice('invalid selection key');
         return true;
     }
 
     #selectEnptuiItem (construct, idx) {
         if (this.screen.keyboardLocked) return;
         const item = construct.items[idx];
-        if (!item || item.unavailable || item.nonCursorable) return;
+        if (!item || item.nonCursorable) {
+            this.#rejectEnptuiChoice();
+            return;
+        }
         if (!construct.multi) {
-            for (let i = 0; i < construct.items.length; i++) {
-                construct.items[i].selected = false;
-                this.#repaintItem(construct, i);
-            }
+            this.#deselectOtherCursorableItems(construct, idx);
+        }
+        if (item.unavailable) {
+            this.#rejectEnptuiChoice();
+            return;
         }
         item.selected = true;
         construct.modified = true;
@@ -521,6 +1093,58 @@ export class InputController {
         this.renderer.draw();
         if (construct.autoEnterOnSelect)
             this.h.onAid?.(item.aidCode || Aid.ENTER);
+    }
+
+    /** Delete deselects the focused ENPTUI choice instead of editing the
+     *  normal field that happens to occupy the same screen cells. */
+    #deselectEnptuiItem (construct, idx) {
+        if (this.screen.keyboardLocked) return;
+        const item = construct.items?.[idx];
+        if (!item || item.unavailable || item.nonCursorable) return;
+        item.selected = false;
+        construct.modified = true;
+        this.#repaintItem(construct, idx);
+        this.renderer.draw();
+        if (construct.autoEnterOnDeselect)
+            this.h.onAid?.(item.aidCode || Aid.ENTER);
+    }
+
+    #rejectEnptuiChoice (message = 'choice unavailable') {
+        this.screen.alarm = true;
+        this.h.onFlash?.(message);
+        this.renderer.draw();
+    }
+
+    /** Erase Input still clears ordinary input fields, then clears every
+     *  cursorable ENPTUI choice. Only the construct under the cursor may
+     *  trigger its configured deselection AID. */
+    #eraseInput () {
+        if (this.screen.keyboardLocked) return;
+        const focused = this.screen.enptuiItemAtCursor?.();
+        this.h.onEraseInput?.();
+        for (const construct of this.screen.enptui?.all ?? []) {
+            if (![ConstructKind.SELECTION_FIELD, ConstructKind.MENU_BAR,
+                ConstructKind.PUSH_BUTTONS].includes(construct.kind)) continue;
+            for (let i = 0; i < (construct.items?.length ?? 0); i++) {
+                const item = construct.items[i];
+                if (item.nonCursorable) continue;
+                item.selected = false;
+                this.#repaintItem(construct, i);
+            }
+            // Erase Input does not manufacture MDT for ENPTUI fields.
+            // A field already marked by an earlier operator action keeps
+            // that state, while an otherwise untouched host selection is
+            // merely cleared from the local presentation.
+        }
+        this.renderer.draw();
+        if (focused?.construct.autoEnterOnDeselect) {
+            const item = focused.construct.items?.[focused.index];
+            // Erase Input operates on the focused pseudo-field as a whole.
+            // Availability prevents direct choice activation, but does not
+            // suppress the field's configured deselection AID.
+            if (item && !item.nonCursorable)
+                this.h.onAid?.(item.aidCode || Aid.ENTER);
+        }
     }
 
     /** Hit-test a click against the scroll bar's interactive zones and
@@ -536,39 +1160,82 @@ export class InputController {
      *  responds with a refreshed list + WRITE_DATA carrying the new
      *  slider position. */
     #tryScrollBarClick (sb, row1, col1) {
-        const vertical = sb.direction === 0;
-        const start    = vertical ? sb.rowOffset + 1 : sb.colOffset + 2;
-        const end      = vertical ? start + sb.length - 1 : sb.colOffset + sb.length - 1;
-        const axis     = vertical ? row1 : col1;
-        const offAxis  = vertical ? col1 : row1;
-        const onAxis   = vertical ? sb.colOffset + 2 : sb.rowOffset + 1;
-        if (offAxis !== onAxis) return false;
-        if (axis < start || axis > end) return false;
+        const hit = this.#scrollBarAt(row1, col1, sb);
+        if (!hit) return false;
         if (this.screen.keyboardLocked) return true;
+        const previousCursor = this.screen.cursor;
+        const clickedAddress = (row1 - 1) * this.screen.cols + col1 - 1;
+        const moved = this.h.onMoveCursor?.(clickedAddress);
+        if (moved === false) return true;
+        const retainCursor = sb.parent
+            ? sb.parent.pointerMayMoveCursor
+            : sb.moveCursor;
+        const finish = () => {
+            if (retainCursor) return;
+            this.screen.cursor = previousCursor;
+            this.renderer.draw();
+        };
 
-        // Map axis position to one of: top arrow, bottom arrow, shaft
-        // above thumb, shaft below thumb, thumb. Thumb covers a span
-        // proportional to visibleRows/totalRows of the bar's length.
-        const thumbLen  = sb.sliderCellSize
-            ?? Math.max(1, Math.floor(sb.length * (sb.visibleRows / Math.max(sb.totalRows, 1))));
-        const thumbPos  = sb.sliderCellPos
-            ?? Math.floor((sb.sliderPos / Math.max(sb.totalRows, 1)) * sb.length);
-        const thumbStart = (vertical ? sb.rowOffset + 1 : sb.colOffset + 1) + thumbPos;
-        const thumbEnd   = thumbStart + thumbLen - 1;
-        let aid;
-        if (axis === start)                     aid = vertical ? Aid.ROLL_DOWN  : Aid.ROLL_LEFT;
-        else if (axis === end)                  aid = vertical ? Aid.ROLL_UP    : Aid.ROLL_RIGHT;
-        else if (axis < thumbStart)             aid = vertical ? Aid.ROLL_DOWN  : Aid.ROLL_LEFT;
-        else if (axis > thumbEnd)               aid = vertical ? Aid.ROLL_UP    : Aid.ROLL_RIGHT;
-        else                                    aid = null;   // thumb click - host will refresh after drag
-        if (aid !== null) {
-            const page = axis !== start && axis !== end;
-            sb.scrollIncrement = page ? Math.max(1, sb.visibleRows) : 1;
+        const vertical = sb.direction === 0;
+        const towardStart = hit.zone === 'decrement' || hit.zone === 'pageDecrement';
+        const towardEnd = hit.zone === 'increment' || hit.zone === 'pageIncrement';
+        const visible = vertical ? sb.length : Math.max(1, sb.length - 2);
+        if ((towardStart && sb.sliderPos === 0)
+            || (towardEnd && sb.sliderPos + visible >= sb.totalRows)) {
+            finish();
+            return true;
+        }
+        if (towardStart || towardEnd) {
+            const page = hit.zone === 'pageDecrement' || hit.zone === 'pageIncrement';
+            sb.scrollIncrement = page ? sb.length : 1;
             sb.modified = true;
             if (sb.parent) sb.parent.modified = true;
-            this.h.onAid?.(aid);
+            this.h.onAid?.(vertical
+                ? (towardStart ? Aid.ROLL_DOWN : Aid.ROLL_UP)
+                : (towardStart ? Aid.ROLL_LEFT : Aid.ROLL_RIGHT));
         }
+        finish();
         return true;
+    }
+
+    #scrollBarAt (row1, col1, only = null) {
+        const constructs = only ? [only] : (this.screen.enptui?.frontToBack ?? []);
+        for (const scrollBar of constructs) {
+            if (scrollBar.kind === ConstructKind.WINDOW) {
+                const bounds = this.screen.enptui.boundsOf(scrollBar);
+                if (bounds && row1 >= bounds.top && row1 <= bounds.bottom
+                    && col1 >= bounds.left && col1 <= bounds.right) return null;
+                continue;
+            }
+            if (scrollBar.kind !== ConstructKind.SCROLL_BAR) continue;
+            const vertical = scrollBar.direction === 0;
+            const axis = vertical ? row1 : col1;
+            const offAxis = vertical ? col1 : row1;
+            const start = vertical ? scrollBar.rowOffset + 1 : scrollBar.colOffset + 2;
+            const end = vertical
+                ? start + scrollBar.length - 1
+                : scrollBar.colOffset + scrollBar.length - 1;
+            const center = vertical ? scrollBar.colOffset + 2 : scrollBar.rowOffset + 1;
+            if (offAxis !== center || axis < start || axis > end) continue;
+            const sliderPos = scrollBar.sliderCellPos ?? 1;
+            const sliderSize = Math.max(1, scrollBar.sliderCellSize ?? 1);
+            const thumbStart = vertical
+                ? start + sliderPos
+                : scrollBar.colOffset + sliderPos + 1;
+            // Horizontal hit testing includes the cell immediately before
+            // the painted shaft as part of the draggable slider zone. This
+            // is intentional and matches the terminal cell-space contract.
+            const thumbEnd = vertical
+                ? thumbStart + sliderSize - 1
+                : thumbStart + sliderSize;
+            const zone = axis === start ? 'decrement'
+                : axis === end ? 'increment'
+                : axis < thumbStart ? 'pageDecrement'
+                : axis > thumbEnd ? 'pageIncrement'
+                : 'thumb';
+            return { scrollBar, zone };
+        }
+        return null;
     }
 
     /** Look for an ENPTUI item whose mnemonic letter matches the typed
@@ -577,13 +1244,13 @@ export class InputController {
         if (this.screen.keyboardLocked) return false;
         const target = ch.toLowerCase();
         const s = this.screen;
-        for (const c of s.enptui.all) {
+        for (const c of s.enptui.frontToBack) {
             if (c.kind !== ConstructKind.SELECTION_FIELD
                 && c.kind !== ConstructKind.PUSH_BUTTONS
                 && c.kind !== ConstructKind.MENU_BAR) continue;
             for (let i = 0; i < c.items.length; i++) {
                 const item = c.items[i];
-                if (item.unavailable) continue;
+                if (item.nonCursorable) continue;
                 if (item.mnemonicOffset < 0) continue;
                 const byte = item.textBytes?.[item.mnemonicOffset];
                 if (byte === undefined) continue;
@@ -605,17 +1272,18 @@ export class InputController {
         if (this.screen.keyboardLocked) return true;
         const { construct, index } = hit;
         const item = construct.items[index];
-        if (!item || item.unavailable || item.nonCursorable) return true;
+        if (!item || item.nonCursorable) return true;
 
         // Enter optionally auto-selects the focused choice, then submits
         // that choice's own AID only when it is selected. This is distinct
         // from Space/pointer activation, which toggles the choice first.
-        if (construct.autoSelect && !item.selected) {
-            if (!construct.multi && construct.kind !== ConstructKind.PUSH_BUTTONS) {
-                for (let i = 0; i < construct.items.length; i++) {
-                    construct.items[i].selected = false;
-                    this.#repaintItem(construct, i);
-                }
+        if (construct.autoSelect) {
+            if (!construct.multi) {
+                this.#deselectOtherCursorableItems(construct, index);
+            }
+            if (item.unavailable) {
+                this.#rejectEnptuiChoice();
+                return true;
             }
             item.selected = true;
             construct.modified = true;
@@ -629,17 +1297,21 @@ export class InputController {
     #activateEnptuiItem (construct, idx) {
         if (this.screen.keyboardLocked) return;
         const item = construct.items[idx];
-        if (!item || item.unavailable || item.nonCursorable) return;
+        if (!item || item.nonCursorable) {
+            this.#rejectEnptuiChoice();
+            return;
+        }
 
         // IBM's pointer path is the Space-key path: ordinary single-choice
         // fields/menu bars deselect their peers and toggle the target;
         // push buttons toggle without clearing their peers. Multi-choice
         // fields independently toggle each item.
         if (!construct.multi && construct.kind !== ConstructKind.PUSH_BUTTONS) {
-            for (let i = 0; i < construct.items.length; i++) {
-                construct.items[i].selected = false;
-                this.#repaintItem(construct, i);
-            }
+            this.#deselectOtherCursorableItems(construct, idx);
+        }
+        if (item.unavailable) {
+            this.#rejectEnptuiChoice();
+            return;
         }
         item.selected = !item.selected;
         construct.modified = true;
@@ -648,9 +1320,19 @@ export class InputController {
         // construct.items so no further state update is needed.
         this.#repaintItem(construct, idx);
         this.renderer.draw();
-        if ((item.selected && construct.autoEnterOnSelect)
-            || (!item.selected && construct.autoEnterOnDeselect))
+        if (item.selected ? construct.autoEnterOnSelect : construct.autoEnterOnDeselect)
             this.h.onAid?.(item.aidCode || Aid.ENTER);
+    }
+
+    /** A single-choice activation may only change choices that the operator
+     *  can reach. A selected non-cursorable choice is host-owned state and
+     *  remains selected until a later host write replaces it. */
+    #deselectOtherCursorableItems (construct, selectedIndex) {
+        for (let i = 0; i < construct.items.length; i++) {
+            if (i === selectedIndex || construct.items[i].nonCursorable) continue;
+            construct.items[i].selected = false;
+            this.#repaintItem(construct, i);
+        }
     }
 
     /** Update the indicator cell to reflect the new selected state.
@@ -662,7 +1344,8 @@ export class InputController {
         const s = this.screen;
         const item = construct.items[idx];
         if (!item || item.dummy) return;
-        const attrIndex = item.unavailable ? 5 : item.selected ? 4 : 3;
+        const attrIndex = item.unavailable ? 5
+            : item.selected && construct.kind !== ConstructKind.PUSH_BUTTONS ? 4 : 3;
         const attrByte = construct.choiceAttrs[attrIndex];
         const attrCell = s.cells[pos.anchorIdx];
         if (attrCell) {

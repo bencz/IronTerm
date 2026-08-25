@@ -14,6 +14,7 @@ export class Selection {
      * @param {import('../display/ScreenBuffer.js').ScreenBuffer} hooks.screen
      * @param {(click:{row:number,col:number})=>void} hooks.onClickCursor
      * @param {(click:{row:number,col:number,pointerEvent:number})=>boolean} [hooks.onPointerEvent]
+     * @param {(click:{row:number,col:number})=>boolean} [hooks.onPointerMove]
      * @param {()=>boolean} [hooks.hasPointerDefinitions]
      * @param {(text:string)=>void} hooks.onType
      * @param {(text:string)=>void} hooks.onFlash
@@ -65,14 +66,19 @@ export class Selection {
     async paste () {
         try {
             const text = await navigator.clipboard.readText();
-            if (!text) return;
-            // 5250 fields are flat; strip line breaks / tabs so they
-            // don't reach the field as literal control characters.
-            const cleaned = text.replace(/[\r\n\t]+/g, ' ');
-            this.h.onType?.(cleaned);
+            this.pasteText(text);
         } catch {
             this.h.onFlash?.('paste blocked');
         }
+    }
+
+    /** Paste text supplied by the browser's trusted `paste` event. */
+    pasteText (text) {
+        if (!text) return;
+        // 5250 fields are flat; strip line breaks / tabs so they
+        // don't reach the field as literal control characters.
+        const cleaned = text.replace(/[\r\n\t]+/g, ' ');
+        this.h.onType?.(cleaned);
     }
 
     // ---- mouse --------------------------------------------------------
@@ -91,8 +97,12 @@ export class Selection {
             this.renderer.setSelection?.(this.selection);
         });
         this.canvas.addEventListener('mousemove', (event) => {
-            if (!this.dragOrigin) return;
             const cell = this.#cellAtMouse(event);
+            if (this.h.onPointerMove?.(cell)) {
+                event.preventDefault();
+                return;
+            }
+            if (!this.dragOrigin) return;
             if (cell.row !== this.dragOrigin.row || cell.col !== this.dragOrigin.col)
                 this.dragMoved = true;
             this.selection = this.#norm(this.dragOrigin, cell);
@@ -124,6 +134,9 @@ export class Selection {
 
     #pointerAtMouse (event, phase) {
         const click = this.#cellAtMouse(event);
+        // ENPTUI numbers pointer events in left/right/middle groups:
+        //   1-3 left, 4-6 right, 7-9 middle (Shift adds 9).
+        // DOM MouseEvent.button uses 0=left, 1=middle, 2=right.
         const buttonBase = event.button === 2 ? 4 : event.button === 1 ? 7 : 1;
         const phaseOffset = phase === 'double' ? 2 : phase === 'up' ? 1 : 0;
         return {

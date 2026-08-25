@@ -104,6 +104,9 @@ function main () {
     });
     $('attnBtn')?.addEventListener('click', () => terminal.sendAttention());
     $('sysreqBtn')?.addEventListener('click', () => terminal.sendSystemRequest());
+    $('fieldExitBtn')?.addEventListener('click', () => terminal.fieldExit());
+    $('dupBtn')?.addEventListener('click', () => terminal.insertDup());
+    $('fieldMarkBtn')?.addEventListener('click', () => terminal.insertFieldMark());
 
     // Populate model select from the Models table so we stay in sync.
     void Models;
