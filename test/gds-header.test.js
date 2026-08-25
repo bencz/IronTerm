@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { wrap, unwrap } from '../public/tn5250/src/proto/GdsHeader.js';
 
 test('GDS round-trips 16-bit flags and validates logical length', () => {
-  const framed = wrap(Uint8Array.of(1, 2, 3), 0x03, 0x6006);
+  const framed = wrap(Uint8Array.of(1, 2, 3), 0x03, 0x4500);
   const decoded = unwrap(framed);
-  assert.equal(decoded.flags, 0x6006);
+  assert.equal(decoded.flags, 0x4500);
   assert.equal(decoded.opcode, 0x03);
   assert.deepEqual(Array.from(decoded.payload), [1, 2, 3]);
   framed[1]--;

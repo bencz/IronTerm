@@ -1,0 +1,19 @@
+     A* ENPTUI ILE COBOL WORKSTATION I/O VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      CA03(03 'Exit')
+     A                                      CF05(05 'Submit')
+     A          R MAIN
+     A                                  1  3'ENPTUI ILE COBOL SAMPLE'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  3  3'Choose a value, then Submit.'
+     A            CBLCHOICE      2Y 0B  5  5SNGCHCFLD(*RSTCSR +
+     A                                      *SLTIND *AUTOSLTENH)
+     A                                      CHOICE(1 '>COBOL')
+     A                                      CHOICE(2 '>RPG')
+     A                                      CHOICE(3 '>Both')
+     A            CBLPUSH        2Y 0B 10  5PSHBTNFLD(*RSTCSR)
+     A                                      PSHBTNCHC(1 '>Submit' CF05)
+     A                                      PSHBTNCHC(2 'E>xit' CA03)
+     A                                 14  3'Returned choice:'
+     A            CBLRESULT     30A  O 14 21COLOR(TRQ)
+     A                                 23  3'F3=Exit'

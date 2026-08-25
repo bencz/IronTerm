@@ -1,0 +1,9 @@
+     A          R NAMESPR
+     A            NASEQ#         5P 0
+     A            NANAME        30A
+     A            NAADDRESS1    30A
+     A            NAADDRESS2    30A
+     A            NACITY        30A
+     A            NASTATE        2A
+     A            NAZIP         10A
+     A          K NASEQ#

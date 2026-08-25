@@ -1,0 +1,40 @@
+     A                                      DSPSIZ(*DS3)
+     A                                      ERRSFL
+     A                                      CHGINPDFT
+     A                                      CA03 CF04
+     A          R FMT01
+     A                                      RTNCSRLOC(&CSRRCD &CSRFLD)
+     A            CSRRCD        10A  H
+     A            CSRFLD        10A  H
+     A                                  1  2'System i'
+     A                                  2  2'WEBDOW'
+     A            HDG5X40      200A  B  1 12CNTFLD(40) CHGINPDFT
+     A                                      DSPATR(PR)
+     A  67                                  COLOR(GRN)
+     A  61                                  COLOR(PNK)
+     A  62                                  COLOR(TRQ)
+     A  63                                  COLOR(WHT)
+     A  64                                  COLOR(BLU)
+     A  65                                  COLOR(RED)
+     A  66                                  COLOR(YLW)
+     A            HDG7X23      161A  B  1 54CNTFLD(23) CHGINPDFT
+     A                                      DSPATR(PR)
+     A  61                                  COLOR(GRN)
+     A  62                                  COLOR(PNK)
+     A  63                                  COLOR(TRQ)
+     A  64                                  COLOR(WHT)
+     A  65                                  COLOR(BLU)
+     A  66                                  COLOR(RED)
+     A  67                                  COLOR(YLW)
+     A            S1USERNAME    50A     6  2COLOR(YLW)
+     A            S1HDG         76A     8  2DSPATR(UL) COLOR(BLU)
+     A                                 10  7'Date (mmddyy)'
+     A            S1DATE          L  B   + 1COLOR(WHT) DATFMT(*JOB)
+     A            POPUP          4A  B   + 1COLOR(BLU) DFTVAL('(F4)')
+     A                                 10 40'Day Name                      '
+     A                                      DSPATR(UL) COLOR(BLU)
+     A            S1DAYNAME     30A    11 40COLOR(WHT)
+     A            PB2            2Y 0B 23  3PSHBTNFLD((*GUTTER 2))
+     A                                      PSHBTNCHC(1 'Done' CA03)
+     A                                      PSHBTNCHC(2 'Calendar' CF04)
+     A                                      CHCAVAIL((*COLOR PNK))

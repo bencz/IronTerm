@@ -1,0 +1,31 @@
+     A* ENPTUI MULTIPLE-CHOICE SUBFILE AND SCROLLBAR VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      CA03(03 'Exit')
+     A          R SFLR                      SFL
+     A            MCTL           1Y 0H      SFLCHCCTL
+     A            ITEM          36A  O  6  8
+     A          R SFLCTL                    SFLCTL(SFLR)
+     A                                      OVERLAY
+     A                                      SFLMLTCHC(&NUMSEL *RSTCSR +
+     A                                      *SLTIND)
+     A                                      SFLPAG(10)
+     A                                      SFLSIZ(30)
+     A                                      SFLDSP
+     A                                      SFLDSPCTL
+     A  90                                  SFLEND(*SCRBAR)
+     A                                      ROLLUP(10 'Next page')
+     A                                      ROLLDOWN(11 'Previous page')
+     A            SCROLLED       5S 0H      SFLSCROLL
+     A            NUMSEL         4Y 0H
+     A                                  1  3'ENPTUI MULTIPLE-CHOICE SUBFILE'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  2  3'Toggle items; use scroll bar.'
+     A                                  4  8'Scrollable choices'
+     A          R FOOT                      OVERLAY
+     A                                 18  3'Number selected:'
+     A            OUTCOUNT       4Y 0O 18 22COLOR(TRQ)
+     A                                 19  3'Last changed item:'
+     A            RESULT        45A  O 19 22COLOR(TRQ)
+     A                                 20  3'Last scroll amount:'
+     A            OUTSCROLL      5S 0O 20 23
+     A                                 23  3'F3=Exit'

@@ -1,0 +1,42 @@
+     A* ENPTUI BASIC CHOICE AND PUSH-BUTTON VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      CA03(03 'Exit')
+     A                                      CF05(05 'Refresh')
+     A          R MAIN
+     A                                  1  3'ENPTUI BASIC CONTROLS'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  2  3'Mouse, Space, arrows, mnemonics.'
+     A                                  4  3'Single choice'
+     A            SINGLE         2Y 0B  5  5SNGCHCFLD((*NUMROW 4) +
+     A                                      *RSTCSR *SLTIND *AUTOSLTENH)
+     A                                      CHOICE(1 '>Alpha')
+     A                                      CHOICE(2 '>Beta')
+     A                                      CHOICE(3 '>Gamma')
+     A                                      CHOICE(4 '>Unavailable')
+     A                                      CHCCTL(4 &SCTL4)
+     A            SCTL4          1Y 0H
+     A                                  4 35'Multiple choice'
+     A            MULTI          2Y 0B  5 37MLTCHCFLD((*NUMROW 4) +
+     A                                      *RSTCSR *SLTIND)
+     A                                      CHOICE(1 '>Red')
+     A                                      CHOICE(2 '>Green')
+     A                                      CHOICE(3 '>Blue')
+     A                                      CHOICE(4 '>Unavailable')
+     A                                      CHCCTL(1 &MCTL1)
+     A                                      CHCCTL(2 &MCTL2)
+     A                                      CHCCTL(3 &MCTL3)
+     A                                      CHCCTL(4 &MCTL4)
+     A            MCTL1          1Y 0H
+     A            MCTL2          1Y 0H
+     A            MCTL3          1Y 0H
+     A            MCTL4          1Y 0H
+     A                                 13  3'Push buttons'
+     A            PUSH           2Y 0B 14  5PSHBTNFLD(*RSTCSR +
+     A                                      (*GUTTER 3))
+     A                                      PSHBTNCHC(1 '>Refresh' CF05)
+     A                                      PSHBTNCHC(2 '>Submit' ENTER)
+     A                                      PSHBTNCHC(3 'E>xit' CA03)
+     A                                 18  3'Returned state:'
+     A            RESULT        65A  O 19  3COLOR(TRQ)
+     A                                 23  3'F3=Exit  F5=Refresh'
+     A                                      COLOR(BLU)

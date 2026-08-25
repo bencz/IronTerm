@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server/static-server.js",
     "check": "node scripts/check-js.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:tn5250:live": "node test/live/tn5250-enptui-pub400.mjs --required"
   },
   "engines": {
     "node": ">=20"

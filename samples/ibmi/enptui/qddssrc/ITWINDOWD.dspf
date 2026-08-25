@@ -1,0 +1,56 @@
+     A* ENPTUI WINDOW AND SUBWINDOW VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      CA03(03 'Exit')
+     A                                      CA12(12 'Cancel')
+     A                                      CF05(05 'Move up')
+     A                                      CF06(06 'Move down')
+     A                                      CF07(07 'Move left')
+     A                                      CF08(08 'Move right')
+     A                                      CF09(09 'Subwindow')
+     A          R BACK
+     A                                  1  3'ENPTUI WINDOW VALIDATION'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  3  3'Host removes and recreates window.'
+     A                                  4  3'Background must be restored.'
+     A                                 23  3'F3=Exit'
+     A          R WDEF                      WINDOW(&WROW &WCOL 9 42 +
+     A                                      *NOMSGLIN *RSTCSR)
+     A                                      RMVWDW
+     A                                      WDWBORDER((*COLOR BLU) +
+     A                                      (*CHAR '+-+||+-+'))
+     A                                      WDWTITLE((*TEXT 'Movable window') +
+     A                                      (*COLOR YLW) *CENTER *TOP)
+     A                                      WDWTITLE((*TEXT 'host positioned') +
+     A                                      (*COLOR TRQ) *RIGHT *BOTTOM)
+     A            WROW           2S 0P
+     A            WCOL           3S 0P
+     A          R WPANEL                    WINDOW(WDEF)
+     A                                      RTNCSRLOC(*WINDOW &CROW &CCOL +
+     A                                      &RROW &RCOL)
+     A                                  1  2'Move with PF5/PF6/PF7/PF8.'
+     A                                  2  2'PF9 opens a child window.'
+     A            ENTRY         20A  B  4  2
+     A                                  6  2'Current host position:'
+     A            POSMSG        18A  O  6 24COLOR(TRQ)
+     A            WPUSH          2Y 0B  8  2PSHBTNFLD(*RSTCSR +
+     A                                      (*GUTTER 2))
+     A                                      PSHBTNCHC(1 '>Up' CF05)
+     A                                      PSHBTNCHC(2 '>Down' CF06)
+     A                                      PSHBTNCHC(3 '>Left' CF07)
+     A                                      PSHBTNCHC(4 '>Right' CF08)
+     A                                      PSHBTNCHC(5 '>Child' CF09)
+     A            CROW           3S 0H
+     A            CCOL           3S 0H
+     A            RROW           3S 0H
+     A            RCOL           3S 0H
+     A          R SUBDEF                    WINDOW(10 27 5 26 +
+     A                                      *NOMSGLIN *RSTCSR)
+     A                                      WDWBORDER((*COLOR PNK) +
+     A                                      (*CHAR '+-+||+-+'))
+     A                                      WDWTITLE((*TEXT 'Child window') +
+     A                                      (*COLOR WHT) *CENTER *TOP)
+     A          R SUBPANEL                  WINDOW(SUBDEF)
+     A                                  1  2'Subwindow is active.'
+     A                                  2  2'It overlays its parent.'
+     A            CHILDIN       12A  B  3  2
+     A                                  5  2'F12=Close'

@@ -1,0 +1,28 @@
+     A* ENPTUI SINGLE-CHOICE SUBFILE AND SCROLLBAR VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      CA03(03 'Exit')
+     A          R SFLR                      SFL
+     A            SCTL           1Y 0H      SFLCHCCTL
+     A            ITEM          36A  O  6  8
+     A          R SFLCTL                    SFLCTL(SFLR)
+     A                                      OVERLAY
+     A                                      SFLSNGCHC(*RSTCSR *SLTIND +
+     A                                      *AUTOSLTENH)
+     A                                      SFLPAG(10)
+     A                                      SFLSIZ(30)
+     A                                      SFLDSP
+     A                                      SFLDSPCTL
+     A  90                                  SFLEND(*SCRBAR)
+     A                                      ROLLUP(10 'Next page')
+     A                                      ROLLDOWN(11 'Previous page')
+     A            SCROLLED       5S 0H      SFLSCROLL
+     A                                  1  3'ENPTUI SINGLE-CHOICE SUBFILE'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  2  3'Select one; use scroll bar.'
+     A                                  4  8'Scrollable choices'
+     A          R FOOT                      OVERLAY
+     A                                 19  3'Returned selection:'
+     A            RESULT        45A  O 19 23COLOR(TRQ)
+     A                                 20  3'Last scroll amount:'
+     A            OUTSCROLL      5S 0O 20 23
+     A                                 23  3'F3=Exit'

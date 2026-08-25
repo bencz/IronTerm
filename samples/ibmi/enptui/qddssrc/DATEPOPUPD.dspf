@@ -1,0 +1,74 @@
+     A                                      DSPSIZ(*DS3 *DS4)
+     A                                      ENTFLDATR((*COLOR WHT) (*DSPATR RI))
+     A                                      CHGINPDFT
+     A          R FMT001
+     A  90                                  DSPMOD(*DS4)
+     A                                      CA03 CA12
+     A                                      RTNCSRLOC(&CSRRCD &CSRFLD)
+     A                                      RTNCSRLOC(*WINDOW &CSRROW &CSRPOS)
+     A                                      CSRLOC(CSRROW CSRPOS)
+     A                                      OVERLAY
+     A                                      WINDOW(&WROW &WPOS 9 21 *NOMSGLIN)
+     A                                      MOUBTN(*ULP ENTER)
+     A            WROW           2  0P
+     A            WPOS           3  0P
+     A            CSRRCD        10   H
+     A            CSRFLD        10   H
+     A            CSRROW         3  0H
+     A            CSRPOS         3  0H
+     A            MONTHYEAR     18   O  1  1DSPATR(HI)
+     A            REDX           1   B  1 21COLOR(RED) DFTVAL('X')
+     A                                  3  2'S' COLOR(RED)
+     A                                  3  5'M' COLOR(BLU)
+     A                                  3  8'T' COLOR(BLU)
+     A                                  3 11'W' COLOR(BLU)
+     A                                  3 14'T' COLOR(BLU)
+     A                                  3 17'F' COLOR(BLU)
+     A                                  3 20'S' COLOR(RED)
+     A            DAY01          2I  B  4  1
+     A            DAY02          2I  B  4  4
+     A            DAY03          2I  B  4  7
+     A            DAY04          2I  B  4 10
+     A            DAY05          2I  B  4 13
+     A            DAY06          2I  B  4 16
+     A            DAY07          2I  B  4 19
+     A            DAY08          2I  B  5  1
+     A            DAY09          2I  B  5  4
+     A            DAY10          2I  B  5  7
+     A            DAY11          2I  B  5 10
+     A            DAY12          2I  B  5 13
+     A            DAY13          2I  B  5 16
+     A            DAY14          2I  B  5 19
+     A            DAY15          2I  B  6  1
+     A            DAY16          2I  B  6  4
+     A            DAY17          2I  B  6  7
+     A            DAY18          2I  B  6 10
+     A            DAY19          2I  B  6 13
+     A            DAY20          2I  B  6 16
+     A            DAY21          2I  B  6 19
+     A            DAY22          2I  B  7  1
+     A            DAY23          2I  B  7  4
+     A            DAY24          2I  B  7  7
+     A            DAY25          2I  B  7 10
+     A            DAY26          2I  B  7 13
+     A            DAY27          2I  B  7 16
+     A            DAY28          2I  B  7 19
+     A            DAY29          2I  B  8  1
+     A            DAY30          2I  B  8  4
+     A            DAY31          2I  B  8  7
+     A            DAY32          2I  B  8 10
+     A            DAY33          2I  B  8 13
+     A            DAY34          2I  B  8 16
+     A            DAY35          2I  B  8 19
+     A            DAY36          2I  B  9  1
+     A            DAY37          2I  B  9  4
+     A            DAY38          2I  B  9  7
+     A            PREVYEAR       2I  B  9 12COLOR(TRQ) DFTVAL('<<')
+     A            PREVMONTH      1I  B   + 1COLOR(TRQ) DFTVAL('<')
+     A            NEXTMONTH      1I  B   + 2COLOR(TRQ) DFTVAL('>')
+     A            NEXTYEAR       2I  B   + 1COLOR(TRQ) DFTVAL('>>')
+     A          R DUMMY
+     A                                      TEXT('Prevents Previous +
+     A                                      screen from being cleared')
+     A                                      ASSUME
+     A                                  5  9' '

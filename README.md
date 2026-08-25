@@ -40,9 +40,9 @@ Or to point the TN5250 client at the public IBM i at pub400.com:
 websockify 0.0.0.0:6080 pub400.com:23
 ```
 
-For multi-target routing, websockify also supports a token file or you
-can put an nginx in front. The terminal sends `binary` as the WebSocket
-subprotocol; websockify accepts it by default.
+For multi-target routing, websockify also supports token-based target
+configuration. The terminal sends `binary` as the WebSocket subprotocol;
+websockify accepts it by default.
 
 **Or skip running your own bridge** - two public test instances are
 already up:
@@ -189,7 +189,7 @@ only the wire protocol and the datastream parser are separate.
 It's tagged **beta** because it has had less mileage on real hardware
 than the 3270 side. Signon, WTD, input fields and AID keys work against
 pub400 and IBM i 7.x. The ENPTUI implementation is checked against the
-open IBM Host On-Demand, but uncommon host combinations still
+established 5250 clients, but uncommon host combinations still
 need end-to-end coverage. Please file issues with a screenshot and host.
 
 **Telnet / TN5250E (RFC 1205, RFC 4777):**
@@ -225,8 +225,12 @@ need end-to-end coverage. Please file issues with a screenshot and host.
   geometry switching, virtual row-1/column-0 fields, and inclusive RA/EA
 - AID keys: Enter, Clear, Help, PF1-24, Roll Up / Down / Left / Right,
   Print, Attn, SysReq
-- Editing keys: Field Exit, Field +/- on the numeric keypad, Insert, Delete,
-  Erase EOF (Alt+Delete), Erase Input (Ctrl/Command+Delete), Home and End
+- Editing keys: Field Exit (Ctrl/Command+Enter or toolbar), New Line
+  (Shift+Enter), Field +/- on the numeric keypad, Insert, Delete,
+  Delete Word (Ctrl/Command+Backspace), Erase Field
+  (Ctrl/Command+Shift+Backspace), Erase EOF (Alt+Delete), Erase Input
+  (Ctrl/Command+Delete), Word Tab/Backtab (Ctrl/Command+Arrow), DUP,
+  Field Mark, Home and End
 - Bypass-signon: optional `USER` / password fields in the toolbar
   short-circuit the standard signon panel (RFC 4777 §5)
 
@@ -242,7 +246,8 @@ need end-to-end coverage. Please file issues with a screenshot and host.
   overlay rendering, and SAVE/RESTORE persistence
 - Malformed structures are rejected with the matching `0x100501xx` ENPTUI
   sense code before the protocol-level negative response is sent
-- The 5292-2 Query Reply advertises enhanced graphics; other models do not
+- The 5292-2 Query Reply advertises enhanced FCWs/WDSFs and ENPTUI level 2
+  through the extended capability bytes; other models use the base reply
 
 **Models supported (5250):**
 
@@ -301,7 +306,7 @@ npm test
 
 On Railway, `npm start` listens on the platform-provided `PORT`. The optional
 container image runs the same Node.js static server and sends the same baseline
-browser security headers; nginx is not required:
+browser security headers:
 
 ```sh
 docker build -t ironterm .

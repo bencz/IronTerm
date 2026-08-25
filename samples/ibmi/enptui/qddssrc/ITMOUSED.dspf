@@ -1,0 +1,37 @@
+     A* ENPTUI PROGRAMMABLE MOUSE VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      CA03(03 'Exit')
+     A                                      CF05(05 'Left sequence')
+     A                                      CF06(06 'Right press')
+     A                                      CF08(08 'Left double')
+     A          R MAIN
+     A                                      MOUBTN(*ULP *ULR CF05)
+     A                                      MOUBTN(*URP CF06 *QUEUE)
+     A                                      MOUBTN(*ULD CF08)
+     A                                      RTNCSRLOC(*MOUSE &CROW &CCOL +
+     A                                      &OROW &OCOL)
+     A                                  1  3'ENPTUI PROGRAMMABLE MOUSE'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  3  3'Left press/release: CF05 sequence'
+     A                                  4  3'Right press: CF06 queued event'
+     A                                  5  3'Left double-click: CF08 event'
+     A                                  8  3'Click anywhere in this test area.'
+     A                                  9  3'+----------------------------+'
+     A                                 10  3'|                            |'
+     A                                 11  3'|                            |'
+     A                                 12  3'|                            |'
+     A                                 13  3'|                            |'
+     A                                 14  3'+----------------------------+'
+     A                                 17  3'Last event:'
+     A            EVENTTXT      30A  O 17 15COLOR(TRQ)
+     A                                 18  3'Cursor row/column:'
+     A            OUTROW         3S 0O 18 23
+     A            OUTCOL         3S 0O 18 28
+     A                                 19  3'Leading event row/column:'
+     A            OUTOROW        3S 0O 19 30
+     A            OUTOCOL        3S 0O 19 35
+     A            CROW           3S 0H
+     A            CCOL           3S 0H
+     A            OROW           3S 0H
+     A            OCOL           3S 0H
+     A                                 23  3'F3=Exit'

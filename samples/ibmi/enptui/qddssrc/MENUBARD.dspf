@@ -1,0 +1,47 @@
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      ERRSFL
+     A                                      CA03
+     A                                      MNUCNL(CA12)
+     A          R MB                        MNUBAR
+     A            MNUFLD         2Y 0B  1  2
+     A                                      MNUBARCHC(1 PULLFILE +
+     A                                      ' Display (DSP*) ')
+     A                                      MNUBARCHC(2 PULLEDIT +
+     A                                      ' Work w/ (WRK*) ')
+     A          R PULLFILE                  PULLDOWN(*NOSLTIND)
+     A            PULL1          2Y 0B  1  2SNGCHCFLD(*AUTOENT)
+     A                                      CHOICE(1 'Display messages')
+     A                                      CHCCTL(1 &C1)
+     A                                      CHOICE(2 'Display job log')
+     A                                      CHCCTL(2 &C2)
+     A                                      CHOICE(3 'Display job')
+     A                                      CHCCTL(3 &C3)
+     A            C1             1Y 0H
+     A            C2             1Y 0H
+     A            C3             1Y 0H
+     A          R PULLEDIT                  PULLDOWN(*NOSLTIND)
+     A            PULL1          2Y 0B  1  2SNGCHCFLD(*AUTOENT)
+     A                                      CHOICE(21 'Work w/ spool file')
+     A                                      CHCCTL(21 &C21)
+     A                                      CHOICE(23 'Work w/ object links')
+     A                                      CHCCTL(23 &C23)
+     A                                      CHOICE(24 'Work w/ user job')
+     A                                      CHCCTL(24 &C24)
+     A            C21            1Y 0H
+     A            C23            1Y 0H
+     A            C24            1Y 0H
+     A          R FMT01                     MNUBARDSP(MB &MNUCHC &PULL)
+     A                                      OVERLAY
+     A            FIGLET       360A  B  3  3CNTFLD(60) CHGINPDFT
+     A                                      DSPATR(PR) COLOR(RED)
+     A            DATEUSA        8A     4 70
+     A            TIMEUSA        8A     5 70
+     A                                  6 70'system i'
+     A                                  7 70USER
+     A            MNUCHC         2Y 0H
+     A            PULL           2S 0H
+     A          R S1CMD
+     A            LINE77        77A    23  2DSPATR(UL)
+     A                                      COLOR(BLU)
+     A                                 24  3'F3=Exit'
+     A                                      COLOR(BLU)

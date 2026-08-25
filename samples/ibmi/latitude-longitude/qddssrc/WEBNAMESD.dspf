@@ -1,0 +1,73 @@
+     A                                      DSPSIZ(*DS3)
+     A                                      CHGINPDFT
+     A                                      ERRSFL
+     A                                      CA03(03) CA09(09) CA21(21)
+     A                                      MOUBTN(*ULR ENTER)
+     A                                      REF(NAMEDATAP)
+     A          R FMT01
+     A                                  1  2'System i'
+     A                                  2  2'WEBNAMES'
+     A            HDG5X40      200A  B  1 12CNTFLD(40) CHGINPDFT
+     A                                      DSPATR(PR) COLOR(PNK)
+     A            HDG7X23      161A  B  1 54CNTFLD(23) CHGINPDFT
+     A                                      DSPATR(PR) COLOR(TRQ)
+     A            S1USERNAME    50A     6  2COLOR(YLW)
+     A          R SFL1                      SFL
+     A            S1NAME    R        B  2  1REFFLD(NANAME)
+     A            S1RECORD     131A  H
+     A          R WIN01                     SFLCTL(SFL1)
+     A                                      OVERLAY
+     A                                      WINDOW(9 2 13 35 -
+     A                                      *NORSTCSR *NOMSGLIN)
+     A                                      WDWBORDER((*COLOR TRQ))
+     A                                      WDWTITLE((*TEXT 'Names') +
+     A                                      (*COLOR TRQ) *LEFT *TOP)
+     A                                      PROTECT
+     A                                      PUTOVR
+     A                                      SFLPAG(0010)
+     A                                      SFLSIZ(&NBRRECS)
+     A  90                                  SFLDSP SFLDSPCTL SFLEND(*SCRBAR)
+     A N90                                  SFLCLR
+     A                                      SFLCSRRRN(&SF1SLCTD)
+     A                                      MOUBTN(*ULP ENTER)
+     A            SF1TOP         4S 0H      SFLRCDNBR(*TOP)
+     A            SF1SLCTD       5S 0H
+     A            SF1RRNA        4S 0H
+     A            NBRRECS        5S 0P
+     A            PB1            2Y 0B 13  2PSHBTNFLD((*GUTTER 2))
+     A                                      PSHBTNCHC(1 'Done' CA03)
+     A                                      PSHBTNCHC(2 'Lat.' CA09)
+     A                                      PSHBTNCHC(3 'Map' CA21)
+     A                                      CHCAVAIL((*COLOR PNK))
+     A          R WIN02
+     A                                      OVERLAY
+     A                                      WINDOW(9 42 9 34 *NOMSGLIN)
+     A                                      RMVWDW
+     A                                      USRRSTDSP
+     A                                      WDWBORDER((*COLOR YLW))
+     A                                      WDWTITLE((*TEXT &W2TITLE) +
+     A                                      (*COLOR TRQ) *LEFT *TOP)
+     A                                      PROTECT
+     A                                      PUTOVR
+     A                                  1  2'Name     '
+     A            W2NAME    R        B  2  4REFFLD(NANAME) COLOR(YLW)
+     A                                  3  2'Address  '
+     A            W2ADDRESS1R        B  4  4REFFLD(NAADDRESS1) COLOR(YLW)
+     A            W2ADDRESS2R        B  5  4REFFLD(NAADDRESS2) COLOR(YLW)
+     A                                  6  2'City     '
+     A            W2CITY    R        B  7  4REFFLD(NACITY) COLOR(YLW)
+     A                                  8  2'State & ZIP'
+     A            W2STATE   R        B  9  4REFFLD(NASTATE) COLOR(YLW)
+     A            W2ZIP     R        B   + 2REFFLD(NAZIP) COLOR(YLW)
+     A            W2TITLE       30A  P
+     A          R WIN03
+     A                                      OVERLAY
+     A                                      WINDOW(7 2 12 34 *NOMSGLIN)
+     A                                      USRRSTDSP
+     A                                      WDWBORDER((*COLOR WHT))
+     A                                      WDWTITLE((*TEXT 'Geo Code') +
+     A                                      (*COLOR WHT) *LEFT *TOP)
+     A                                      PROTECT
+     A                                      PUTOVR
+     A            W3RESPONSE   396A  B  1  2CNTFLD(33)
+     A                                      DSPATR(PR) COLOR(TRQ)

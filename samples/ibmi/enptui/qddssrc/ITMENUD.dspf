@@ -1,0 +1,34 @@
+     A* ENPTUI MENU BAR AND PULLDOWN VALIDATION
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      MNUCNL(CA12)
+     A                                      CA03(03 'Exit')
+     A          R MBAR                      MNUBAR
+     A            MNUFLD         2Y 0B  1  2
+     A                                      MNUBARCHC(1 PFILE '>File')
+     A                                      MNUBARCHC(2 PVIEW '>View')
+     A                                      MNUBARSEP((*COLOR WHT) +
+     A                                      (*CHAR '|'))
+     A          R MAIN                      MNUBARDSP(MBAR &MNUCHC +
+     A                                      &PULLCHC)
+     A                                  4  3'ENPTUI MENU BAR AND PULLDOWN'
+     A                                      COLOR(WHT) DSPATR(HI)
+     A                                  6  3'Use mouse, arrows or mnemonic.'
+     A                                  8  3'Last menu selection:'
+     A            RESULT        50A  O  8 24COLOR(TRQ)
+     A                                 23  3'F3=Exit  F12=Cancel pulldown'
+     A            MNUCHC         2Y 0H
+     A            PULLCHC        2S 0H
+     A          R PFILE                     PULLDOWN
+     A            FILECHC        2Y 0B  1  2SNGCHCFLD(*AUTOENT +
+     A                                      *AUTOSLT *RSTCSR)
+     A                                      CHOICE(1 '>Open')
+     A                                      CHOICE(2 '>Save')
+     A                                      CHOICE(3 'E>xit')
+     A                                      CHCACCEL(1 'Enter')
+     A                                      CHCACCEL(2 'F5')
+     A          R PVIEW                     PULLDOWN
+     A            VIEWCHC        2Y 0B  1  2SNGCHCFLD(*AUTOENT +
+     A                                      *AUTOSLT *RSTCSR)
+     A                                      CHOICE(1 '>Normal')
+     A                                      CHOICE(2 '>Compact')
+     A                                      CHOICE(3 '>Details')
