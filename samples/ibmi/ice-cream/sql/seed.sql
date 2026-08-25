@@ -1,0 +1,16 @@
+INSERT INTO BENCZ1.ICECREAMP (ICFLAVOR, ICAVAIL, ICIMAGE) VALUES
+  ('Banana',          'Y', 'banana.jpg'),
+  ('Butter Pecan',    'Y', 'butter-pecan.jpg'),
+  ('Chocolate',       'Y', 'chocolate.jpg'),
+  ('Chocolate Chip',  'Y', 'chocolate-chip.jpg'),
+  ('Coffee',          'Y', 'coffee.jpg'),
+  ('Cookie Dough',    ' ', 'cookie-dough.jpg'),
+  ('Cookies Cream',   'Y', 'cookies-cream.jpg'),
+  ('Mint Chocolate',  'Y', 'mint-chocolate.jpg'),
+  ('Neapolitan',      ' ', 'neapolitan.jpg'),
+  ('Pistachio',       'Y', 'pistachio.jpg'),
+  ('Rocky Road',      'Y', 'rocky-road.jpg'),
+  ('Strawberry',      'Y', 'strawberry.jpg'),
+  ('Vanilla',         'Y', 'vanilla.jpg'),
+  ('Vanilla Bean',    'Y', 'vanilla-bean.jpg'),
+  ('White Chocolate', ' ', 'white-chocolate.jpg');

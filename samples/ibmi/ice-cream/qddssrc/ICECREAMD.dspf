@@ -1,0 +1,72 @@
+      ****************************************************************
+      *   ___             _    _     __ __             _    _        *
+      *  | . > ___  ___ _| |_ | |_  |  \  \ ___  _ _ _| |_ <_>._ _   *
+      *  | . \/ . \/ . \ | |  | . | |     |<_> || '_> | |  | || ' |  *
+      *  |___/\___/\___/ |_|  |_|_| |_|_|_|<___||_|   |_|  |_||_|_|  *
+      *                                                              *
+      *  A display screen for an Ice Cream Demo.                     *
+      *   (To demo scroll bar and radio button & check box.          *
+      *                                                              *
+      *   3/2013                                 booth@martinvt.com  *
+      ****************************************************************
+                                            DSPSIZ(*DS3)
+                                            ERRSFL
+                                            CA03
+                                            CA05
+                                            CF10
+                                            REF(ICECREAMP)
+      *****************************************************************
+                R SFL1                      SFL
+                  S1ICAVAIL R        B 12  3CHECK(LC) REFFLD(ICAVAIL)
+                                            SFLCSRPRG
+        31                                  DSPATR(PC) COLOR(WHT)
+       N31                                  DSPATR(PR)
+                  S1ICFLAVORR        B   + 1CHECK(LC) REFFLD(ICFLAVOR)
+        31                                  COLOR(WHT)
+       N31                                  DSPATR(PR)
+                  S1ICIMAGE R        B   + 1CHECK(LC) REFFLD(ICIMAGE)
+        31                                  COLOR(WHT)
+       N31                                  DSPATR(PR)
+                  S1SVAVAIL R        H      REFFLD(ICAVAIL)
+                  S1SVFLAVORR        H      REFFLD(ICFLAVOR)
+                  S1SVIMAGE R        H      REFFLD(ICIMAGE)
+      *****************************************************************
+                R S1FMT                     SFLCTL(SFL1)
+                                            SFLPAG(010) SFLSIZ(&SF1RECS)
+                                            OVERLAY
+       N50                                  SFLDSP SFLDSPCTL
+        50                                  SFLCLR
+       N91                                  SFLEND(*SCRBAR )
+                                            SFLCSRRRN(&SF1RRN)
+                                            MOUBTN(*ULP ENTER)
+                  SF1RRN         5S 0H
+                  SF1RECS        5S 0P
+                  HDG5X65      325   B  1  2CNTFLD(65) CHGINPDFT
+                                            DSPATR(PR) COLOR(BLU)
+                                        1 69DATE
+                                            EDTCDE(Y)
+                                        2 69TIME
+                                        3 69'system i'
+                                        4 69USER
+                  CHBOX1         2Y 0B  9  3MLTCHCFLD AUTO(RA) COLOR(BLU)
+                                            CHOICE(1 &CB01)
+                                            CHOICE(2 &CB02)
+                                            CHCCTL(1 &CB01CHC)
+                                            CHCCTL(2 &CB02CHC)
+                  CB01CHC        1Y 0H
+                  CB02CHC        1Y 0H
+                  CB01          30A  P
+                  CB02          30A  P
+                                       11  2'Avail.    Flavors                 -
+                                            image file name                    -
+                                                 '
+                                            DSPATR(UL) COLOR(TRQ)
+      *****************************************************************
+                R S1CMD
+                  PB1            2Y 0B 23  3PSHBTNFLD((*GUTTER 2))
+                                            PSHBTNCHC(1 'Exit  F3' CA03)
+                                            CHCAVAIL((*COLOR PNK))
+                                            PSHBTNCHC(2 'Refresh  F5' CA05)
+                                            CHCAVAIL((*COLOR PNK))
+                                            PSHBTNCHC(3 'Publish  F10' CF10)
+                                            CHCAVAIL((*COLOR PNK))
